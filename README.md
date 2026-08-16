@@ -331,6 +331,48 @@ pointed at a real ledger.
 Nothing in it is real. It is a seeder rather than a database dump precisely so
 that every row is reviewable.
 
+### Running it for real, in Docker
+
+`make demo` is a demo, and its compose file is written to be one: the database
+password is `finances`, the session secret is a constant committed to this
+repository, and the data is fictional. Anyone who reads this repo can forge a
+session cookie against a stack running those values, so do not point it at real
+money as it stands.
+
+To self-host it properly, keep the compose file's shape and change what makes it
+a demo:
+
+1. **Generate your own secrets** and keep them out of the repo:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(48))"   # AUTH_SECRET
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY, only if you use Plaid
+   ```
+2. **Feed them in from the environment** rather than editing values into the
+   file, so nothing secret is ever tracked. Put them in a `.env` next to the
+   compose file and reference them:
+   ```yaml
+   environment:
+     AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+     POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+   ```
+   The `:?` form is deliberate: it refuses to start rather than falling back to
+   a default, which is the failure mode you want for a secret.
+3. **Decide what the port is exposed to.** The demo publishes it on all
+   interfaces because that is convenient on a laptop. For a real deployment,
+   bind it to localhost and put a reverse proxy in front, or reach it over a
+   private network such as a Tailscale tailnet, which is what this deployment
+   does. The app authenticates every route itself, but that is a reason to be
+   careful with the port rather than a reason to publish it.
+4. **Persist the database somewhere you back up.** The demo uses a named volume
+   that `make demo-down` deletes on purpose. A real deployment wants a bind
+   mount on a path your backups cover.
+5. **Create your household.** There is no registration flow, so seed it as
+   described in the section below, then `scripts/set_password.py` for each user.
+6. **Upgrades are explicit.** Pull, rebuild, then run `alembic upgrade head`
+   yourself. The app refuses to boot when the database is behind the migration
+   head, so a forgotten migration is a loud crash with the fix in the log
+   rather than pages that render with no data.
+
 ### Running it directly, without Docker
 
 Point it at a Postgres you already have:
