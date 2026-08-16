@@ -31,7 +31,7 @@
   <template x-if="!plaidReady">
     <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 text-sm">
       Plaid is not configured. Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code> and
-      <code>FERNET_KEY</code> in <code>.env</code>.
+      <code>FERNET_KEY</code> in the app's environment (the compose file for the demo stack, <code>backend/.env</code> when running directly).
     </div>
   </template>
 
@@ -185,7 +185,7 @@
     <template x-if="!pluggyReady">
       <div class="px-5 py-4 text-sm text-amber-800 bg-amber-50">
         Pluggy is not configured. Set <code>PLUGGY_CLIENT_ID</code> and
-        <code>PLUGGY_CLIENT_SECRET</code> in <code>.env</code> (from dashboard.pluggy.ai).
+        <code>PLUGGY_CLIENT_SECRET</code> in the app's environment (from dashboard.pluggy.ai).
       </div>
     </template>
     <template x-if="pluggyReady && pluggyItems.length === 0">

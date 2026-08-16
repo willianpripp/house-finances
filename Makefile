@@ -17,13 +17,18 @@ COMPOSE := docker compose -f docker/docker-compose.yml
 
 .PHONY: demo demo-down logs psql test
 
-## Clone to a populated UI. Safe to re-run: it stops at the seeder if the
-## database already has data, which is the seeder refusing to touch a ledger.
+## Clone to a populated UI. Safe to re-run: the seeder declines a database
+## that already has data (that is it refusing to touch a ledger) and the app
+## still comes up, which is why that line carries a leading dash.
+##
+## Running a second copy on the same machine? Set COMPOSE_PROJECT_NAME as
+## well, or both resolve to one stack and `make demo-down` (down -v) takes
+## the other copy's database with it.
 demo:
 	$(COMPOSE) build app
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm -T app alembic upgrade head
-	$(COMPOSE) run --rm -T app python scripts/seed_demo.py
+	-$(COMPOSE) run --rm -T app python scripts/seed_demo.py
 	$(COMPOSE) up -d --wait app
 	@echo ""
 	@echo "  House Finances demo is up:  http://localhost:$(DEMO_PORT)"

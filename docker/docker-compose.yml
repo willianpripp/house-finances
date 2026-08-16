@@ -13,7 +13,7 @@
 # Explicit project name. Without it Compose derives one from this directory's
 # basename ("docker"), so running the same file from another path would create
 # a second, empty database and leave the first orphaned.
-name: finances-public-demo
+name: ${COMPOSE_PROJECT_NAME:-finances-public-demo}
 
 services:
 
