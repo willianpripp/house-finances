@@ -724,11 +724,11 @@ def commit_checking_import(
     cc_payment_overrides: dict[int, int] | None = None,
     save_transfer_rule_flags: set[int] | None = None,
     pre_parsed: CheckingParseResult | None = None,
-    source_override: ImportSource | None = None,
+    source_override: str | None = None,
 ) -> CheckingImportCommitResult:
     """Either pass `file_content + filename` (PDF flow) or `pre_parsed +
     source_override` (manual paste flow). `source_override` sets the
-    ImportSource on the audit log.
+    source on the audit log.
 
     `category_overrides` (idx -> category_id) lets the user rescue a row the
     classifier got wrong: any activity with an override is inserted as a normal

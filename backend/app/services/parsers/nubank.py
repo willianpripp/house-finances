@@ -29,7 +29,6 @@ from io import BytesIO
 import pandas as pd
 import pdfplumber
 
-from app.models.enums import ImportSource
 from app.services.parsers.registry import ParserKind, ParserSpec
 from app.services.parsers.types import (
     EARLIEST_IMPORT_YEAR,
@@ -205,7 +204,7 @@ def parse(content: bytes) -> ParseResult:
 
 
 SPEC = ParserSpec(
-    source=ImportSource.NUBANK_CREDITO,
+    source="NUBANK_CREDITO",
     parse=parse,
     kind=ParserKind.CARD,
     order=80,

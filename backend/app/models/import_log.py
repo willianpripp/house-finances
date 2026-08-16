@@ -1,11 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
 from app.models.base import TimestampMixin
-from app.models.enums import ImportSource
 from app.models.user import User
 
 
@@ -14,9 +13,10 @@ class ImportLog(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    source: Mapped[ImportSource] = mapped_column(
-        SAEnum(ImportSource, name="import_source"), nullable=False
-    )
+    # Text, not an enum type: the valid values come from the parser registry
+    # plus `ImportSource`, checked below. See services/import_sources.py for
+    # why the database is no longer the authority here.
+    source: Mapped[str] = mapped_column(Text, nullable=False)
     transaction_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     imported_at: Mapped[datetime] = mapped_column(
@@ -31,5 +31,15 @@ class ImportLog(Base, TimestampMixin):
 
     user: Mapped[User | None] = relationship("User", lazy="joined")
 
+    @validates("source")
+    def _validate_source(self, _key: str, value: object) -> str:
+        """Every write path converges here, so this is where an unrecognised
+        source is rejected — the check the Postgres enum used to provide.
+        Fires on assignment only, never on load: rows written by a parser this
+        tree no longer ships must still read back."""
+        from app.services.import_sources import normalize_import_source
+
+        return normalize_import_source(value)
+
     def __repr__(self) -> str:
-        return f"<ImportLog {self.filename} ({self.source.value}) {self.transaction_count} txn>"
+        return f"<ImportLog {self.filename} ({self.source}) {self.transaction_count} txn>"

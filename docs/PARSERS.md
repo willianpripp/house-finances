@@ -58,7 +58,7 @@ Two consequences worth stating plainly:
 
 | Field | Meaning |
 |---|---|
-| `source` | The `ImportSource` enum value recorded on the `import_logs` row. |
+| `source` | This parser's own identity, recorded verbatim on the `import_logs` row. A plain string the module owns: SCREAMING_SNAKE, and stable forever, because rows already written carry it. |
 | `parse` | The parse callable. Card parsers take `(content: bytes)` and return `ParseResult`. Checking parsers take `(content: bytes, rules: MatchRules)` and return `CheckingParseResult`. |
 | `patterns` | Filename keywords, any-of over the outer tuple, all-of inside each inner one. `(("wf", "checking"), ("wells", "fargo"))` reads "wf and checking, or wells and fargo". |
 | `formats` | The file formats this parser accepts, for the user-facing hint ("CSV", "PDF"). |
@@ -99,7 +99,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.models.enums import ImportSource
 from app.services.parsers.registry import ParserKind, ParserSpec
 from app.services.parsers.types import ParsedTransaction, ParseResult
 
@@ -119,7 +118,7 @@ def parse(content: bytes) -> ParseResult:
 
 
 SPEC = ParserSpec(
-    source=ImportSource.MANUAL,
+    source="MY_BANK",
     parse=parse,
     kind=ParserKind.CARD,
     order=500,
@@ -137,10 +136,13 @@ Three notes:
   sanity check and does not store them as transactions, because card balances
   come from the checking side (money leaving an account) and never from the
   card statement itself.
-- **`source` must be an existing `ImportSource` value**, since it is a Postgres
-  enum. Adding a label means a migration; `tests/test_import_source_enum.py`
-  fails if the Python enum and the database type drift apart. Reusing `MANUAL`
-  is fine while you develop.
+- **`source` is yours to name, and no migration is involved.**
+  `import_logs.source` is a text column. The valid values are the registered
+  parsers' own sources plus the handful of paths no parser owns (`MANUAL`, the
+  two bank-sync providers, the car loan), assembled at runtime in
+  `services/import_sources.py` and checked when the row is written, so an
+  unrecognised string is still rejected. Pick it once and never change it: rows
+  already written carry the string.
 - **Optionally return `statement_close_date` and `due_date`** on the
   `ParseResult` if the statement header carries them. The importer updates the
   payment method's close and due day on commit when they are present.
@@ -205,7 +207,7 @@ def parse(content: bytes, rules: MatchRules) -> CheckingParseResult:
 
 
 SPEC = ParserSpec(
-    source=ImportSource.MANUAL,
+    source="CHECKING_MY_BANK",
     parse=parse,
     kind=ParserKind.CHECKING,
     order=500,

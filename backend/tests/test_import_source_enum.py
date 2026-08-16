@@ -1,13 +1,17 @@
-"""The Python `ImportSource` and the Postgres `import_source` type must agree.
+"""`import_logs.source` is text, and the application is what validates it.
 
-One label once sat on the Python enum, wired to a real parser, while no
-migration ever added it to the Postgres type: the parse succeeded and the
-`import_logs` INSERT at commit time was the thing that blew up. Both
-directions are pinned here, and both are checked against whatever this tree
-actually declares — so the assertions hold in the private repo (all eleven
-parsers, their labels merged in from `app/models/import_sources_extra.py`) and
-in the public export (three parsers, that module absent, the squashed
-`0001_initial` carrying the smaller type). See the public-export decision.
+It used to be a Postgres enum, and the failure that justified the type was
+real: a label sat on the Python enum, wired to a live parser, while no
+migration ever added it to the type — the parse succeeded and the INSERT blew
+up. But the type could only ever know the labels someone remembered to
+migrate, which made adding a parser a schema change and made the schema itself
+a list of every institution the tree can read.
+
+So the contract moved to where the answer actually lives: a source is valid if
+a registered parser declares it (`ParserSpec.source`) or it is one of the paths
+no parser owns (`ImportSource`). These tests pin that contract against whatever
+this tree ships, so they hold in the private repo (eleven parsers) and in the
+public export (three) without either knowing which one it is.
 """
 from __future__ import annotations
 
@@ -15,39 +19,77 @@ import pytest
 from sqlalchemy import select, text
 
 from app.models import ImportLog, ImportSource
+from app.services import import_sources
+from app.services.parsers.registry import card_specs, checking_specs
 
 
-def _postgres_labels(db) -> list[str]:
-    return list(
-        db.scalars(
-            text(
-                "SELECT e.enumlabel FROM pg_enum e "
-                "JOIN pg_type t ON t.oid = e.enumtypid "
-                "WHERE t.typname = 'import_source' ORDER BY e.enumsortorder"
-            )
-        ).all()
-    )
-
-
-@pytest.mark.parametrize("source", list(ImportSource), ids=lambda s: s.name)
-def test_every_import_source_can_be_written_to_import_logs(db, source):
+def _write(db, source) -> ImportLog:
     log = ImportLog(
-        filename=f"{source.value}.csv",
+        filename=f"{source}.csv",
         source=source,
         transaction_count=0,
         skipped_count=0,
     )
     db.add(log)
     db.flush()
+    return log
 
-    assert db.scalar(select(ImportLog.source).where(ImportLog.id == log.id)) is source
+
+@pytest.mark.parametrize(
+    "spec",
+    list(card_specs() + checking_specs()),
+    ids=lambda spec: spec.source,
+)
+def test_every_registered_parser_source_can_be_written(db, spec):
+    """The direction the old enum kept breaking: a parser this tree ships
+    whose source the storage layer will not accept."""
+    log = _write(db, spec.source)
+    assert db.scalar(select(ImportLog.source).where(ImportLog.id == log.id)) == spec.source
 
 
-def test_python_enum_and_postgres_type_hold_the_same_labels(db):
-    """Set equality, not order: the type's label ORDER comes from the migration
-    chain (a value renamed in place keeps its old position) and differs from
-    the model's declaration order by design — `make verify-baseline` is what
-    pins order, against the chain. What must never drift is membership: a
-    Python member with no label fails at INSERT, and a label with no member
-    means the schema still carries something this tree can no longer emit."""
-    assert {source.name for source in ImportSource} == set(_postgres_labels(db))
+@pytest.mark.parametrize("source", list(ImportSource), ids=lambda s: s.name)
+def test_every_non_parser_source_can_be_written(db, source):
+    log = _write(db, source)
+    stored = db.scalar(select(ImportLog.source).where(ImportLog.id == log.id))
+    assert stored == source.value
+    assert type(stored) is str
+
+
+def test_an_unknown_source_is_rejected_before_it_reaches_the_database(db):
+    """Text columns take anything, so the check has to be ours. It fires on
+    assignment, which is why nothing is flushed here."""
+    with pytest.raises(ValueError, match="unknown import source"):
+        ImportLog(filename="x.csv", source="BANCO_INVENTADO", transaction_count=0, skipped_count=0)
+
+    # A source whose parser is not in this tree is exactly as unknown: the
+    # public export ships fewer parsers and must reject the rest.
+    absent = "DEFINITELY_NOT_A_PARSER_IN_THIS_TREE"
+    assert absent not in import_sources.known_sources()
+    with pytest.raises(ValueError):
+        ImportLog(filename="x.csv", source=absent, transaction_count=0, skipped_count=0)
+
+
+def test_a_historical_row_reads_back_even_when_no_parser_claims_it(db):
+    """Validation is write-time only. `import_logs` is an audit trail, and a
+    row written by a parser the tree has since dropped must still load."""
+    db.execute(
+        text(
+            "INSERT INTO import_logs (filename, source, transaction_count, skipped_count) "
+            "VALUES ('legacy.csv', 'A_RETIRED_PARSER', 0, 0)"
+        )
+    )
+    db.flush()
+    log = db.scalars(select(ImportLog).where(ImportLog.filename == "legacy.csv")).one()
+    assert log.source == "A_RETIRED_PARSER"
+
+
+def test_the_import_source_enum_type_is_gone_from_the_database(db):
+    """The simplification itself: no type to extend, so no migration when a
+    parser is added and nothing institution-shaped in the schema."""
+    assert db.scalar(text("SELECT to_regtype('import_source')")) is None
+
+
+def test_known_sources_is_the_union_of_the_two_halves():
+    known = import_sources.known_sources()
+    assert known == import_sources.parser_sources() | {s.value for s in ImportSource}
+    assert import_sources.parser_sources(), "no parser registered a source"

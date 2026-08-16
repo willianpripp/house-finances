@@ -9,24 +9,20 @@ full chain (`alembic upgrade head`) — verified by `make verify-baseline`
 file instead of replaying 30+ incremental migrations that only make sense
 against the private repo's real history.
 
-ONE deliberate divergence, and the verify script knows about it: the
-`import_source` enum type carries only the labels a tree with three parsers
-can emit, so it is a strict SUBSET of the private chain's type rather than
-equal to it (the export ships three reference parsers, so the full institution label
-list said out loud what shipping eleven parsers only implied). The private
-chain is not touched: prod's `import_logs` rows keep their labels and no
-migration renames or drops a value. Everything else in this file is still
-compared for exact equality.
+There is no deliberate divergence: every line is compared for equality. There
+was one until 2026-08-16 — the `import_source` enum type, which the export
+declared with a reduced label list because the full one enumerated the
+author's institutions. `import_logs.source` is now plain text with the valid
+values assembled in the application from the parser registry (private-chain
+migration c5a2d8e73f16), so a tree that ships fewer parsers accepts fewer
+sources with nothing in the schema to trim.
 
 Column order, constraint names and index definitions below intentionally
 follow the private chain's actual on-disk result rather than the models'
 declaration order — several columns were added by later ALTER TABLE
 migrations and so sit at the end of their table on the real database, and a
 few enum labels were relabeled in place by a later migration, which keeps a
-label at its original position rather than the model's. The surviving
-`import_source` labels keep the private type's relative order for the same
-reason, which is also what makes the subset check above a straight
-`comm` of two sorted label lists.
+label at its original position rather than the model's.
 
 `transactions` dedup is a 3-way split of PARTIAL unique indexes (manual
 signature dedup vs. Plaid vs. Pluggy provider ids), not the single plain
@@ -335,27 +331,11 @@ def upgrade() -> None:
         "import_logs",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("filename", sa.String(length=255), nullable=False),
-        sa.Column(
-            "source",
-            # The ONE place this baseline is deliberately not a copy of the
-            # private chain's schema: the labels are the private type's, minus
-            # the ten belonging to parsers this tree does not ship
-            # Relative order is preserved, so
-            # the set is a strict subset and `make verify-baseline` asserts
-            # exactly that instead of equality for this one type.
-            sa.Enum(
-                "CITI",
-                "AMAZON",
-                "CAR_LOAN",
-                "MANUAL",
-                "NUBANK_CREDITO",
-                "CHECKING_NUBANK",
-                "PLAID",
-                "PLUGGY",
-                name="import_source",
-            ),
-            nullable=False,
-        ),
+        # Text, not an enum type: which ingestion paths exist is decided by the
+        # parsers the tree ships plus `ImportSource`, and checked on write
+        # (app/services/import_sources.py). Nothing to migrate when a parser is
+        # added or left out.
+        sa.Column("source", sa.Text(), nullable=False),
         sa.Column("transaction_count", sa.Integer(), nullable=False),
         sa.Column("skipped_count", sa.Integer(), nullable=False),
         sa.Column("imported_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
@@ -649,7 +629,6 @@ def downgrade() -> None:
         "receivable_direction",
         "plaid_item_status",
         "payment_method_type",
-        "import_source",
         "income_source",
         "household_role",
         "currency",

@@ -617,7 +617,7 @@ def _imported_since(session: Session, *, payment_method_id: int, after: date) ->
     `imported_at >= after`. Uses `ImportLog.payment_method_id` so a
     fully-idempotent re-import (transaction_count=0, no Transactions
     pointing back) still counts as "I already imported this cycle".
-    Independent of `ImportSource` — covers CC files, CC paste (MANUAL),
+    Independent of the row's `source` — covers CC files, CC paste (MANUAL),
     checking PDFs and checking paste alike."""
     after_dt = datetime.combine(after, time.min)
     hit = session.scalar(

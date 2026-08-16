@@ -55,45 +55,27 @@ class RecurrenceKind(str, Enum):
     EXTRA_PRINCIPAL = "EXTRA_PRINCIPAL"
 
 
-# `ImportSource` is assembled rather than declared in one block, because a
-# label only means something in a tree that can emit it. The members below are
-# either generic (MANUAL, PLAID, PLUGGY, CAR_LOAN) or belong to a parser that
-# every tree ships. The institution labels of the parsers that are NOT public
-# live next to nothing else, in `import_sources_extra.py`, which the export
-# omits along with those parser modules (the public export ships three reference parsers:
-# set of parsers a repo ships is the set of accounts its author holds, and an
-# enum enumerating eleven institutions says the same thing louder).
-#
-# Same mechanism as the parser registry: a module that is absent registers
-# nothing and nothing imports it by name. No file is rewritten on the way out.
-_IMPORT_SOURCES: dict[str, str] = {
-    "CITI": "citi",
-    "AMAZON": "amazon",
-    "NUBANK_CREDITO": "nubank_credito",
-    "CHECKING_NUBANK": "checking_nubank",
-    "CAR_LOAN": "car_loan",
-    "MANUAL": "manual",
-    "PLAID": "plaid",  # US auto-pull via Plaid (one import_log per sync run)
-    "PLUGGY": "pluggy",  # BR auto-pull via Pluggy (one import_log per review commit)
-}
+class ImportSource(str, Enum):
+    """The ingestion paths that no statement parser owns.
 
-try:  # pragma: no cover - the except branch is the public tree's only path
-    from app.models.import_sources_extra import EXTRA_IMPORT_SOURCES
-except ImportError:
-    EXTRA_IMPORT_SOURCES: dict[str, str] = {}
+    This is deliberately NOT the full set of values `import_logs.source` can
+    hold. Per-parser identity lives on the parser: each module's `ParserSpec`
+    carries its `source` as a plain string (`services/parsers/registry.py`),
+    and `import_logs.source` is a TEXT column, so adding a parser is still
+    just dropping a module in a directory — no enum to extend, no migration,
+    and no type in the database enumerating every institution the tree can
+    read. `services/import_sources.py` is the union of the two halves and the
+    check every `import_logs` write goes through.
 
-ImportSource = Enum(  # type: ignore[misc]
-    "ImportSource",
-    {**_IMPORT_SOURCES, **EXTRA_IMPORT_SOURCES},
-    type=str,
-    module=__name__,
-    qualname="ImportSource",
-)
-ImportSource.__doc__ = (
-    "Which ingestion path produced an `import_logs` row. Member NAMES are the "
-    "labels of the Postgres `import_source` type; every member must exist "
-    "there (tests/test_import_source_enum.py pins both directions)."
-)
+    Values equal names because they are written to the column verbatim, and
+    they are the labels the retired Postgres `import_source` type used, so
+    rows written before the enum→text migration read back unchanged.
+    """
+
+    MANUAL = "MANUAL"   # typed or pasted by hand, no parser claimed the file
+    PLAID = "PLAID"     # US auto-pull via Plaid (one import_log per sync run)
+    PLUGGY = "PLUGGY"   # BR auto-pull via Pluggy (one import_log per review commit)
+    CAR_LOAN = "CAR_LOAN"  # loan-schedule import, not a bank statement
 
 
 class PlaidItemStatus(str, Enum):

@@ -25,7 +25,6 @@ from app.models import (
     CategoryType,
     Currency,
     ImportLog,
-    ImportSource,
     Merchant,
     PaymentMethod,
     RecurrenceKind,
@@ -382,7 +381,7 @@ def commit_import(
     save_rule_amount_flags: list[bool] | None = None,
     contract_conversions: dict[int, CardContractConversion] | None = None,
     pre_parsed: ParseResult | None = None,
-    source_override: ImportSource | None = None,
+    source_override: str | None = None,
 ) -> ImportCommitResult:
     if pre_parsed is None:
         if file_content is None:

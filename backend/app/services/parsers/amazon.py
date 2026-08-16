@@ -5,7 +5,6 @@ statement structure and parsing logic.
 """
 from __future__ import annotations
 
-from app.models.enums import ImportSource
 from app.services.parsers.registry import ParserKind, ParserSpec
 from app.services.parsers.synchrony import parse_synchrony
 from app.services.parsers.types import ParseResult
@@ -16,7 +15,7 @@ def parse(content: bytes) -> ParseResult:
 
 
 SPEC = ParserSpec(
-    source=ImportSource.AMAZON,
+    source="AMAZON",
     parse=parse,
     kind=ParserKind.CARD,
     order=90,
