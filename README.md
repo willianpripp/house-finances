@@ -1,6 +1,7 @@
 # House Finances
 
 [![hygiene](https://github.com/willianpripp/house-finances/actions/workflows/hygiene.yml/badge.svg)](https://github.com/willianpripp/house-finances/actions/workflows/hygiene.yml)
+[![tests](https://github.com/willianpripp/house-finances/actions/workflows/tests.yml/badge.svg)](https://github.com/willianpripp/house-finances/actions/workflows/tests.yml)
 
 A self-hosted household finance manager for a two-currency household: a Postgres
 ledger, a web UI, a phone UI, statement importers, optional read-only bank sync,
