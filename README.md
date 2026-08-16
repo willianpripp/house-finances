@@ -60,7 +60,7 @@ then commit. Nothing writes to the ledger behind your back.
 | **Monthly report** | Income buckets, spending by category with a doughnut chart, fixed vs variable split, surplus, net worth and total worth. Recomputed live from transactions, exchange rates and snapshots on every read, so no month is ever frozen at a stale rate. Includes the fixed-expense rollover: preview next month's installment series and withholding placeholders, adjust, then commit. |
 | **Annual report** | Year-to-date aggregates plus four charts: net and total worth over time, monthly surplus, fixed/variable/taxes stacked, and top categories. |
 | **Transactions** | List, filter, inline edit, delete, and split one charge into N installments. Each row carries its own currency, owner, payment method and recurrence kind. |
-| **Imports** | Drop a credit-card statement (CSV/MD) or a bank checking statement (PDF), or paste activity. The parser classifies every row, the categorizer proposes a merchant and category, and the preview marks each row as new, duplicate, new-merchant or shared before anything is written. The parsers are a registry: five bank-specific reference modules ship here, covering three ingestion paths, and adding your own bank is one module, see [docs/PARSERS.md](docs/PARSERS.md). |
+| **Imports** | Drop a credit-card statement (CSV/MD) or a bank checking statement (PDF), or paste activity. The parser classifies every row, the categorizer proposes a merchant and category, and the preview marks each row as new, duplicate, new-merchant or shared before anything is written. The parsers are a registry: five bank-specific modules ship here, four of them registered parsers, covering three ingestion paths, and adding your own bank is one module, see [docs/PARSERS.md](docs/PARSERS.md). |
 | **Connections** | Bank sync. Link an institution, map each provider account to a payment method, refresh balances, and run the per-account **Review then Commit** flow that feeds the same import preview the manual flow uses. Fully optional: without credentials the page explains what to set and the rest of the app is unaffected. See [docs/PLAID.md](docs/PLAID.md). |
 | **Receivables** | Who owes you and who you owe, per person and **per currency**. A split dinner becomes N rows sharing a group id. USD and BRL totals are never netted together, because they are not the same money. |
 | **Debts** | Credit-card balances derived live (last recorded snapshot plus the transactions posted since, excluding future-dated projections) and a car loan with a per-payment amortization log: principal paid, interest paid, remaining balance, totals to date. |
@@ -267,6 +267,14 @@ make demo DEMO_PORT=8003
 Only `make demo` needs the override. The stack carries an explicit Compose
 project name, so `make demo-down`, `make logs` and `make psql` find it either
 way.
+
+On a machine other people's devices can reach, the app is also at
+`http://<that-host>:<DEMO_PORT>`, which is how you open the phone UI on a phone
+and use Add to Home Screen.
+
+Running a second copy on the same machine? Set `COMPOSE_PROJECT_NAME` as well,
+or both copies resolve to the same Compose stack and `make demo-down` takes the
+other copy's database with it.
 
 When you are done, `make demo-down` removes the containers and the database
 volume, so the next `make demo` starts from an empty database again.
