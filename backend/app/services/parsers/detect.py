@@ -12,12 +12,14 @@ drifting copy of its keywords in a template.
 
 A tree that ships a subset of the parser modules resolves the subset: an absent
 module registers nothing and its filenames simply detect as None.
+
+The `source` half of what these return is the spec's own string, written
+verbatim to `import_logs.source` (see `services/import_sources.py`).
 """
 from __future__ import annotations
 
 from typing import Callable
 
-from app.models.enums import ImportSource
 from app.services.parsers.checking import CheckingParseResult, MatchRules
 from app.services.parsers.registry import (
     ParserKind,
@@ -57,7 +59,7 @@ def run_cc_parser(
     return parse_fn(content)
 
 
-def detect(filename: str) -> tuple[ImportSource, Callable[[bytes], ParseResult]] | None:
+def detect(filename: str) -> tuple[str, Callable[[bytes], ParseResult]] | None:
     name = filename.lower()
     if detect_checking(filename) is not None:
         return None  # checking statements are handled by detect_checking
@@ -69,7 +71,7 @@ def detect(filename: str) -> tuple[ImportSource, Callable[[bytes], ParseResult]]
 
 def detect_checking(
     filename: str,
-) -> tuple[ImportSource, Callable[[bytes, MatchRules], CheckingParseResult]] | None:
+) -> tuple[str, Callable[[bytes, MatchRules], CheckingParseResult]] | None:
     name = filename.lower()
     for spec in checking_specs():
         if _spec_matches_filename(spec, name):

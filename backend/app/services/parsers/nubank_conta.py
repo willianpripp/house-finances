@@ -32,7 +32,6 @@ from io import BytesIO
 
 import pdfplumber
 
-from app.models.enums import ImportSource
 from app.services.parsers.registry import ParserKind, ParserSpec
 from app.services.parsers.checking import (
     CheckingActivity,
@@ -281,7 +280,7 @@ def parse(content: bytes, rules: MatchRules) -> CheckingParseResult:
 
 
 SPEC = ParserSpec(
-    source=ImportSource.CHECKING_NUBANK,
+    source="CHECKING_NUBANK",
     parse=parse,
     kind=ParserKind.CHECKING,
     order=30,

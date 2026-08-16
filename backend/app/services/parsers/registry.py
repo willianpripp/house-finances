@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
-
-from app.models.enums import ImportSource
 
 
 class ParserKind(str, Enum):
@@ -43,6 +42,12 @@ class ParserSpec:
     `patterns` is any-of, each inner tuple all-of: `(("wf", "checking"),
     ("wells", "fargo"))` reads "wf and checking, or wells and fargo".
 
+    `source` is the parser's own identity, written verbatim to
+    `import_logs.source` (a text column). Owning it here is what makes adding a
+    parser a one-file change: there is no enum to extend and no migration.
+    Convention, enforced by `register()`: SCREAMING_SNAKE, stable forever,
+    because rows already written carry it.
+
     `order` is the precedence key inside the spec's kind (lower is tried
     first). `excludes` rejects a filename carrying any of those words;
     `suffixes`, when set, requires one of them. `paste_capable` says the same
@@ -50,7 +55,7 @@ class ParserSpec:
     parse function that takes the household holder names as a second argument.
     """
 
-    source: ImportSource
+    source: str
     parse: Callable[..., object]
     patterns: tuple[tuple[str, ...], ...]
     formats: tuple[str, ...]
@@ -76,8 +81,19 @@ class _Entry:
 _entries: list[_Entry] = []
 _discovered = False
 
+# `source` is stored, not just compared, so a typo becomes a permanent value in
+# the audit table. Checking the shape at registration fails the whole tree at
+# discovery time instead — cheap, and it is the only moment a new parser's
+# identity passes through common code.
+_SOURCE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
 
 def register(spec: ParserSpec, *, module: str, index: int = 0) -> None:
+    if not _SOURCE_RE.match(spec.source):
+        raise ValueError(
+            f"parser module {module!r} declares source {spec.source!r}; it is written "
+            f"to import_logs.source verbatim and must be SCREAMING_SNAKE"
+        )
     _entries.append(_Entry(spec=spec, module=module, index=index))
 
 
