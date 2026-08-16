@@ -141,6 +141,47 @@ change and is tested on both.
 
 ---
 
+## Project structure
+
+```
+house-finances/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI entry point, lifespan, render(), PHONE_PAGES
+│   │   ├── config.py            # Settings, all from env vars
+│   │   ├── models/              # SQLAlchemy ORM models
+│   │   ├── routers/             # API and page routes, incl. plaid.py and pluggy.py
+│   │   ├── services/
+│   │   │   ├── parsers/         # statement parsers, registry.py, detect.py
+│   │   │   ├── importer.py      # card import flow
+│   │   │   ├── checking_importer.py
+│   │   │   ├── plaid_*.py       # client, balances, provider-to-ParseResult adapters
+│   │   │   ├── pluggy_*.py      # the same, for Brazil
+│   │   │   ├── schema_guard.py  # boot-time check that the DB is at migration head
+│   │   │   └── auth.py          # JWT session cookie
+│   │   ├── templates/           # desktop templates
+│   │   │   └── phone/           # the separate phone-shaped UI
+│   │   └── static/              # css/ and vendored js, no build step
+│   ├── migrations/              # Alembic, one squashed baseline
+│   ├── scripts/                 # seed_demo.py, set_password.py
+│   └── tests/
+├── docker/docker-compose.yml    # the demo stack: app + Postgres
+├── docs/
+│   ├── DECISIONS.md             # why the app is shaped this way, including a version that was killed
+│   ├── PLAID.md                 # bank sync, and how Pluggy mirrors it
+│   ├── PARSERS.md               # how to add a parser for your own bank
+│   └── screenshots/
+├── .github/workflows/           # hygiene check, and the test suite on a real Postgres
+├── Makefile                     # make demo, make test
+└── README.md
+```
+
+Two things worth knowing about this layout. **`services/` holds the logic and
+`routers/` stays thin**, so a route is usually a few lines that call one
+service function. And **the phone UI is a separate set of templates**, not
+responsive CSS over the desktop ones, which is a deliberate trade explained in
+[docs/DECISIONS.md](docs/DECISIONS.md).
+
 ## Stack
 
 | Layer | Choice | Why |
