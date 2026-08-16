@@ -233,6 +233,39 @@ renders its shell, and shows no data. See [docs/DECISIONS.md](docs/DECISIONS.md)
 
 ---
 
+## Running for real
+
+This is not a portfolio demo that was built and abandoned. It runs continuously
+in containers on a small home server and two people use it to run an actual
+household budget. A few parts of that are worth copying:
+
+- **Nothing is port-forwarded.** The router has no inbound ports open, so there
+  is no public attack surface pointing at the house. The household reaches the
+  app over a Tailscale tailnet, which terminates TLS with a real certificate,
+  so it is proper HTTPS without exposing anything to the internet.
+- **This app authenticates every route itself**, which is where it differs from
+  the household's other apps. They can lean on a shared gate at the edge and
+  trust the private network; a ledger holding bank connections should not.
+  The reverse proxy's basic auth was removed the day the app's own login
+  shipped, so there is exactly one authentication boundary and it is inside the
+  application.
+- **Exactly one instance may ever hold the provider credentials.** Two would
+  duplicate rows and reset the deduplication cursor, so bringing a second copy
+  up against the same accounts is a documented no.
+- **The app refuses to boot when the database is behind the migration head.**
+  That guard exists because of a real outage where every page returned HTTP 200,
+  rendered its shell, and showed no data at all. HTTP 200 is not evidence that
+  a page works, and a crash with the fix in the log beats a silent wrong answer.
+- **Deploys are an explicit sequence, not a push.** Lint, verified backup,
+  build, compare the migration head against the database and abort if they
+  differ, restart, then sweep every route and grep the logs. Migrating is its
+  own separate command on purpose.
+- **Backups run nightly** and balances refresh on a schedule outside the app.
+  Both live in a private infrastructure repository, because this repository is
+  the application and nothing else.
+
+---
+
 ## Quickstart
 
 Three commands from clone to a populated UI:
@@ -424,6 +457,44 @@ guard that the Python `ImportSource` enum and the Postgres type have not
 drifted; and a sweep that loads every converted phone page on both UIs. Each run
 builds its own `test_run` schema, migrates into it, seeds a fixture household
 and drops the schema at the end.
+
+---
+
+## How this was built
+
+I built this with AI assistance and would rather say so plainly than leave
+anyone to guess. The earliest versions were written with Google's Gemini
+models; the rewrite this repository documents, and everything since, was built
+with [Claude Code](https://claude.com/claude-code) using several of Anthropic's
+models. Most of the code here was written by a model. The parts that make it
+worth running were not.
+
+What the split actually looks like:
+
+- **The decisions are mine.** What to build, what to refuse to build, and the
+  rules the ledger enforces: that a transaction's currency follows its payment
+  method rather than the merchant's country, that an exchange rate row is a
+  historical fact and is never overwritten, that a paycheck belongs to the month
+  it funds. [docs/DECISIONS.md](docs/DECISIONS.md) is the record of those
+  arguments, including the rewrite I killed after a week and what I took from
+  it.
+- **The models wrote most of the implementation**, often several working in
+  parallel on separate pieces, with a different model reviewing the diff before
+  anything shipped. That review is not decoration: the pass before this repository
+  went public found a function named after my city's transit system, an enum that
+  still listed every bank I use, and a documentation file describing a scheduled
+  job that did not exist.
+- **Real money drove almost every change.** Two people's accounts run through
+  this. The features that matter came from a month going wrong in a specific
+  way, not from a roadmap, and the bugs worth reading about were found by
+  reconciling real statements rather than by testing.
+- **Nothing destructive or public happened without my explicit go-ahead.**
+  Applying a migration to the live database, writing to production, making this
+  repository public: each one waited for me to say so.
+
+I use these tools every day, and being straightforward about how the work gets
+done seems more useful than the alternative. The code, the commit history and
+the design notes are here to be judged on their own terms.
 
 ---
 
