@@ -1,0 +1,346 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Assets — {{ app_name }}{% endblock %}
+{% block ptitle %}Assets{% endblock %}
+
+{% block content %}
+<div x-data="phoneAssets()" x-init="init()" class="space-y-3">
+
+    <!-- TOTALS -->
+    <div class="pcard space-y-1">
+        <div class="flex items-center justify-between text-sm">
+            <span class="text-xs text-slate-500">Assets total (USD)</span>
+            <span class="font-semibold text-slate-900" x-text="formatUsd(totalUsd)"></span>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-400">
+            <span x-text="formatBrl(totalUsd)"></span>
+            <span x-text="`${assets.length} item(s)`"></span>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-500 pt-1 border-t border-slate-100">
+            <span>FX (effective today)</span>
+            <span x-text="(effectiveRate || '—') + (effectiveDate ? ' · ' + effectiveDate : '')"></span>
+        </div>
+    </div>
+
+    <div class="pcard bg-violet-50 border-violet-200 text-xs text-violet-900">
+        <span class="font-medium text-violet-700 uppercase tracking-wide">Tip</span>
+        <div class="mt-1">
+            Net Worth (Monthly/Annual reports) stays liquid: savings − debt.
+            <span class="font-medium">Total Worth = Net Worth + Assets</span> and is shown next to it on the reports.
+        </div>
+    </div>
+
+    <!-- LIST: tap a row to reveal edit/delete -->
+    <div class="pcard">
+        <template x-for="a in assets" :key="a.id">
+            <div>
+                <div class="prow" @click="expanded = expanded === a.id ? null : a.id">
+                    <span class="grow">
+                        <span class="text-sm font-medium text-slate-800" x-text="a.name"></span>
+                        <span class="ml-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-mono align-middle"
+                              :class="kindBadge(a.kind)" x-text="a.kind"></span>
+                        <span class="block text-xs text-slate-500"
+                              x-text="[a.location, a.acquired_date].filter(Boolean).join(' · ') || '—'"></span>
+                        <span class="block text-xs" :class="serviceDueClass(a)"
+                              x-show="a.last_service_date || a.next_service_due_date">
+                            <span x-show="a.last_service_date">Last: <span x-text="a.last_service_date"></span></span>
+                            <span x-show="a.last_service_date && a.next_service_due_date"> · </span>
+                            <span x-show="a.next_service_due_date">Next: <span x-text="a.next_service_due_date"></span></span>
+                        </span>
+                        <span class="block text-xs text-slate-400 italic truncate" x-show="a.notes" x-text="a.notes"></span>
+                    </span>
+                    <span class="text-right whitespace-nowrap">
+                        <span class="text-sm font-semibold text-slate-900" x-text="formatAmount(a.current_value)"></span>
+                        <span class="text-xs text-slate-400 ml-1" x-text="a.currency"></span>
+                        <span class="block text-[10px] text-slate-400 font-mono" x-text="formatCounterCurrency(a)"></span>
+                        <span class="block text-[10px] text-slate-400"
+                              x-text="a.last_valued_date ? 'valued ' + a.last_valued_date : ''"></span>
+                    </span>
+                </div>
+                <div x-show="expanded === a.id" x-cloak class="flex gap-2 py-2 pl-2">
+                    <button @click.stop="openEdit(a)"
+                            class="text-xs border border-slate-300 rounded px-3 py-1.5 text-blue-600">Edit</button>
+                    <button @click.stop="askDelete(a)"
+                            class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
+                </div>
+            </div>
+        </template>
+        <div x-show="!loading && assets.length === 0" class="py-4 text-center text-slate-400 text-sm">
+            No assets yet. Tap + to track the car or anything else of value.
+        </div>
+    </div>
+
+    <p x-show="errorMessage" class="text-sm text-rose-600" x-text="errorMessage"></p>
+
+    <!-- ADD / EDIT ASSET bottom sheet -->
+    <div x-show="modal.open" x-cloak>
+        <div class="psheet-backdrop" @click="modal.open = false"></div>
+        <div class="psheet space-y-3">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900"
+                     x-text="modal.id ? 'Edit asset' : 'Add asset'"></div>
+                <button @click="modal.open = false" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <input type="text" x-model="modal.name" placeholder="Name"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+
+            <div class="flex gap-2">
+                <select x-model="modal.kind" class="flex-1 border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                    <option value="VEHICLE">Vehicle</option>
+                    <option value="PROPERTY">Property</option>
+                    <option value="ELECTRONICS">Electronics</option>
+                    <option value="JEWELRY">Jewelry</option>
+                    <option value="OTHER">Other</option>
+                </select>
+                <input type="text" x-model="modal.location" placeholder="Location (e.g. Home)"
+                       class="flex-1 border border-slate-300 rounded px-3 py-2 text-sm">
+            </div>
+
+            <div class="flex gap-2">
+                <input type="number" step="0.01" x-model.number="modal.current_value" placeholder="Value"
+                       class="flex-1 border border-slate-300 rounded px-3 py-2 text-sm text-right">
+                <select x-model="modal.currency" class="w-24 border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                    <option value="USD">USD</option>
+                    <option value="BRL">BRL</option>
+                </select>
+            </div>
+
+            <div class="flex gap-2">
+                <div class="flex-1">
+                    <label class="block text-xs text-slate-500 mb-1">Acquired date</label>
+                    <input type="date" x-model="modal.acquired_date"
+                           class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs text-slate-500 mb-1">Last valued</label>
+                    <input type="date" x-model="modal.last_valued_date"
+                           class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+                </div>
+            </div>
+
+            <div class="flex gap-2">
+                <div class="flex-1">
+                    <label class="block text-xs text-slate-500 mb-1">Last service</label>
+                    <input type="date" x-model="modal.last_service_date"
+                           class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs text-slate-500 mb-1">Next service due</label>
+                    <input type="date" x-model="modal.next_service_due_date"
+                           class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+                </div>
+            </div>
+
+            <textarea x-model="modal.notes" rows="2"
+                      placeholder="Notes (e.g. valuation guide range, mileage, condition)"
+                      class="w-full border border-slate-300 rounded px-3 py-2 text-sm"></textarea>
+
+            <p x-show="modal.error" class="text-sm text-rose-600" x-text="modal.error"></p>
+
+            <button @click="save()" :disabled="modal.busy || !modal.name || !modal.current_value"
+                    class="w-full bg-emerald-600 text-white rounded-lg px-4 py-3 text-sm font-medium disabled:opacity-40">
+                <span x-show="!modal.busy">Save</span>
+                <span x-show="modal.busy">Saving…</span>
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<!-- Outside the page's x-data scope, so it talks to it via a window event. -->
+<button class="pfab" x-data @click="window.dispatchEvent(new CustomEvent('open-new-asset'))" title="Add asset">+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function phoneAssets() {
+    return {
+        assets: [],
+        loading: false,
+        errorMessage: '',
+        expanded: null,
+        effectiveRate: '',
+        effectiveDate: '',
+        modal: {
+            open: false, busy: false, error: '',
+            id: null, name: '', kind: 'VEHICLE', location: '',
+            acquired_date: '', current_value: '', currency: 'USD',
+            last_valued_date: '',
+            last_service_date: '', next_service_due_date: '',
+            notes: '',
+        },
+
+        async init() {
+            window.addEventListener('open-new-asset', () => { this.openCreate(); });
+            await Promise.all([this.reload(), this.loadRate()]);
+        },
+
+        get totalUsd() {
+            const rate = parseFloat(this.effectiveRate) || 1;
+            return this.assets.reduce((sum, a) => {
+                const v = parseFloat(a.current_value) || 0;
+                return sum + (a.currency === 'USD' ? v : v / rate);
+            }, 0);
+        },
+
+        async reload() {
+            this.loading = true;
+            try {
+                const res = await fetch('/api/assets');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.assets = await res.json();
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async loadRate() {
+            const res = await fetch('/api/exchange-rates?limit=1');
+            if (!res.ok) return;
+            const data = await res.json();
+            const r = data.rates?.[0] || data[0];
+            if (r) {
+                this.effectiveRate = parseFloat(r.effective).toFixed(4);
+                this.effectiveDate = r.rate_date;
+            }
+        },
+
+        openCreate() {
+            this.expanded = null;
+            this.modal = {
+                open: true, busy: false, error: '',
+                id: null, name: '', kind: 'VEHICLE', location: '',
+                acquired_date: '', current_value: '', currency: 'USD',
+                last_valued_date: new Date().toISOString().slice(0, 10),
+                last_service_date: '', next_service_due_date: '',
+                notes: '',
+            };
+        },
+
+        openEdit(a) {
+            this.expanded = null;
+            this.modal = {
+                open: true, busy: false, error: '',
+                id: a.id, name: a.name, kind: a.kind,
+                location: a.location || '',
+                acquired_date: a.acquired_date || '',
+                current_value: a.current_value, currency: a.currency,
+                last_valued_date: a.last_valued_date || '',
+                last_service_date: a.last_service_date || '',
+                next_service_due_date: a.next_service_due_date || '',
+                notes: a.notes || '',
+            };
+        },
+
+        async save() {
+            this.modal.busy = true;
+            this.modal.error = '';
+            const body = {
+                name: this.modal.name,
+                kind: this.modal.kind,
+                location: this.modal.location || null,
+                acquired_date: this.modal.acquired_date || null,
+                current_value: this.modal.current_value,
+                currency: this.modal.currency,
+                last_valued_date: this.modal.last_valued_date || null,
+                last_service_date: this.modal.last_service_date || null,
+                next_service_due_date: this.modal.next_service_due_date || null,
+                notes: this.modal.notes || null,
+            };
+            try {
+                const url = this.modal.id ? `/api/assets/${this.modal.id}` : '/api/assets';
+                const method = this.modal.id ? 'PATCH' : 'POST';
+                const res = await fetch(url, {
+                    method,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.modal.open = false;
+                await this.reload();
+            } catch (e) {
+                this.modal.error = e.message;
+            } finally {
+                this.modal.busy = false;
+            }
+        },
+
+        askDelete(a) {
+            if (!confirm(`Delete ${a.name}? This will subtract ${this.formatAmount(a.current_value)} ${a.currency} from your Total Worth.`)) return;
+            this.doDelete(a);
+        },
+
+        async doDelete(a) {
+            try {
+                const res = await fetch(`/api/assets/${a.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.expanded = null;
+                await this.reload();
+            } catch (e) {
+                this.errorMessage = e.message;
+            }
+        },
+
+        serviceDueClass(a) {
+            if (!a.next_service_due_date) return 'text-slate-500';
+            const due = new Date(a.next_service_due_date);
+            const now = new Date();
+            const daysAway = Math.round((due - now) / 86400000);
+            if (daysAway < 0) return 'text-rose-700 font-medium';      // overdue
+            if (daysAway <= 30) return 'text-amber-700 font-medium';    // due within 30d
+            return 'text-slate-600';
+        },
+
+        kindBadge(k) {
+            return {
+                VEHICLE:     'bg-amber-100 text-amber-800',
+                PROPERTY:    'bg-emerald-100 text-emerald-800',
+                ELECTRONICS: 'bg-sky-100 text-sky-800',
+                JEWELRY:     'bg-pink-100 text-pink-800',
+                OTHER:       'bg-slate-100 text-slate-700',
+            }[k] || 'bg-slate-100 text-slate-700';
+        },
+
+        formatAmount(n) {
+            if (n === null || n === undefined || n === '') return '';
+            return parseFloat(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        },
+        formatUsd(n) {
+            if (n === null || n === undefined) return '$0.00';
+            return '$' + parseFloat(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        },
+        formatBrl(usdValue) {
+            const rate = parseFloat(this.effectiveRate);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(usdValue);
+            if (Number.isNaN(n)) return '';
+            const brl = n * rate;
+            const sign = brl < 0 ? '-' : '';
+            return `${sign}R$ ${Math.abs(brl).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        formatCounterCurrency(a) {
+            const rate = parseFloat(this.effectiveRate);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(a.current_value);
+            if (Number.isNaN(n)) return '';
+            // USD-valued -> show BRL equivalent; BRL-valued -> show USD equivalent.
+            if (a.currency === 'USD') {
+                return `≈ R$ ${(n * rate).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+            return `≈ $${(n / rate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+    };
+}
+</script>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

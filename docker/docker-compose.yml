@@ -1,0 +1,76 @@
+# The demo stack: Postgres plus the app, nothing else.
+#
+# Every value here is a DEMO default and is meant to be public. AUTH_SECRET
+# below signs session cookies for a database full of fictional data on your own
+# machine; if you point this app at anything real, generate your own
+# (python -c "import secrets; print(secrets.token_urlsafe(48))") and keep it in
+# an untracked .env.
+#
+# Bank sync (Plaid/Pluggy) is deliberately left unconfigured: the Connections
+# page then explains what is missing and every other page works unchanged.
+# That is the point of the demo — the manual import path is complete on its own.
+
+# Explicit project name. Without it Compose derives one from this directory's
+# basename ("docker"), so running the same file from another path would create
+# a second, empty database and leave the first orphaned.
+name: finances-public-demo
+
+services:
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: finances
+      POSTGRES_USER: finances
+      POSTGRES_PASSWORD: finances
+    volumes:
+      # Named volume, removed by `make demo-down` (which passes -v).
+      - demo_db:/var/lib/postgresql/data
+    # Not published: the app reaches it over the compose network, and `make
+    # psql` goes through `docker compose exec`.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finances -d finances"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  app:
+    build:
+      context: ../backend
+    image: house-finances:demo
+    restart: unless-stopped
+    depends_on:
+      db:
+        # service_healthy, not the default: plain depends_on waits only for the
+        # container to be created, so the app would try to connect while
+        # Postgres is still running initdb on first boot.
+        condition: service_healthy
+    environment:
+      APP_NAME: "House Finances"
+      ENVIRONMENT: production
+      DATABASE_URL: "postgresql+psycopg://finances:finances@db:5432/finances"
+      # Demo-only. See the note at the top of this file.
+      AUTH_SECRET: "demo-secret-not-for-anything-real-0000000000"
+      # Left empty on purpose — the app degrades gracefully without them.
+      FERNET_KEY: ""
+      PLAID_CLIENT_ID: ""
+      PLAID_SECRET: ""
+      PLAID_ENV: "sandbox"
+      PLUGGY_CLIENT_ID: ""
+      PLUGGY_CLIENT_SECRET: ""
+    ports:
+      # Override with `make demo DEMO_PORT=8003` when 8080 is taken.
+      - "${DEMO_PORT:-8080}:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=4).status==200 else 1)\""]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  demo_db:

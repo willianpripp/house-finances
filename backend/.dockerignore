@@ -1,0 +1,9 @@
+# A local .venv dwarfs the rest of the repo and would be copied into the build
+# context on every single build. It is also the wrong Python for this image.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+tests/

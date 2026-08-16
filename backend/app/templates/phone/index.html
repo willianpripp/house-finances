@@ -1,0 +1,126 @@
+{% extends "phone/base.html" %}
+
+{% block title %}{{ app_name }}{% endblock %}
+{% block ptitle %}{{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="phoneHome()" x-init="init()" class="space-y-3">
+
+    <div class="text-sm text-slate-500">
+        <span x-text="greeting"></span>
+        {% if not db_ok %}
+            <span class="ml-2 px-2 py-0.5 rounded bg-rose-100 text-rose-800 text-xs font-medium"
+                  title="{{ db_message }}">DB offline</span>
+        {% endif %}
+    </div>
+
+    <!-- KPIs -->
+    <div class="grid grid-cols-2 gap-3">
+        <div class="pcard">
+            <div class="text-xs uppercase tracking-wide font-medium text-slate-500">Net income</div>
+            <div class="text-xl font-semibold text-slate-900 mt-1" x-text="stats?.monthly?.value || '—'"></div>
+            <div class="text-xs text-slate-500 mt-0.5" x-text="monthLabel"></div>
+        </div>
+        <div class="pcard">
+            <div class="text-xs uppercase tracking-wide font-medium text-slate-500">Savings</div>
+            <div class="text-xl font-semibold text-slate-900 mt-1" x-text="stats?.savings?.value || '—'"></div>
+            <div class="text-xs mt-0.5"
+                 :class="(stats?.savings?.delta_pct || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                 x-text="formatMom(stats?.savings?.delta_pct)"></div>
+        </div>
+        <div class="pcard">
+            <div class="text-xs uppercase tracking-wide font-medium text-slate-500">Card Debt</div>
+            <div class="text-xl font-semibold text-slate-900 mt-1" x-text="stats?.debts?.value || '—'"></div>
+            <div class="text-xs mt-0.5"
+                 :class="(stats?.debts?.delta_pct || 0) > 0 ? 'text-rose-700' : 'text-emerald-700'"
+                 x-text="formatMom(stats?.debts?.delta_pct)"></div>
+        </div>
+        <div class="pcard">
+            <div class="text-xs uppercase tracking-wide font-medium text-slate-500">Total Worth</div>
+            <div class="text-xl font-semibold text-slate-900 mt-1" x-text="stats?.assets?.value || '—'"></div>
+            <div class="text-xs text-slate-500 mt-0.5">assets only</div>
+        </div>
+    </div>
+
+    <!-- WARNINGS -->
+    <div class="pcard" x-show="warningsSummary?.items?.length" x-cloak>
+        <a href="/warnings" class="flex items-center justify-between">
+            <span class="text-sm font-semibold text-slate-800">⚠ Warnings</span>
+            <span class="text-xs text-slate-500"
+                  x-text="(warningsSummary?.overdraft_count || 0) + (warningsSummary?.expiring_count || 0)"></span>
+        </a>
+        <ul class="mt-1">
+            <template x-for="(it, i) in warningsSummary?.items || []" :key="i">
+                <li class="prow text-sm">
+                    <span x-text="it.severity === 'high' ? '🔴' : '🟡'"></span>
+                    <span class="grow text-slate-700" x-text="it.title"></span>
+                </li>
+            </template>
+        </ul>
+    </div>
+
+    <!-- EVERYTHING ELSE -->
+    <div class="pcard">
+        <div class="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-1">All pages</div>
+        <a href="/reports/monthly" class="prow"><span>📊</span><span class="grow text-slate-800">Monthly report</span><span class="text-xs text-slate-500" x-text="stats?.monthly?.value || ''"></span></a>
+        <a href="/reports/annual" class="prow"><span>📈</span><span class="grow text-slate-800">Annual report</span></a>
+        <a href="/savings" class="prow"><span>💰</span><span class="grow text-slate-800">Savings</span><span class="text-xs text-slate-500" x-text="stats?.savings?.value || ''"></span></a>
+        <a href="/debts" class="prow"><span>💳</span><span class="grow text-slate-800">Debts</span><span class="text-xs text-slate-500" x-text="stats?.debts?.value || ''"></span></a>
+        <a href="/assets" class="prow"><span>🚗</span><span class="grow text-slate-800">Assets</span></a>
+        <a href="/transactions" class="prow"><span>✏️</span><span class="grow text-slate-800">Transactions</span></a>
+        <a href="/income" class="prow"><span>💵</span><span class="grow text-slate-800">Income</span></a>
+        <a href="/imports" class="prow"><span>📥</span><span class="grow text-slate-800">Imports</span></a>
+        <a href="/connections" class="prow"><span>🔗</span><span class="grow text-slate-800">Connections</span></a>
+        <a href="/warnings" class="prow"><span>⚠️</span><span class="grow text-slate-800">Warnings</span><span class="text-xs text-slate-500" x-text="stats?.warnings?.value ? stats.warnings.value + ' active' : ''"></span></a>
+        <a href="/exchange-rates" class="prow"><span>💱</span><span class="grow text-slate-800">Rates</span></a>
+        <a href="/rules" class="prow"><span>🏷️</span><span class="grow text-slate-800">Rules</span></a>
+        <a href="/guide" class="prow"><span>📖</span><span class="grow text-slate-800">Guide</span></a>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<a class="pfab" href="/receivables?new=1" title="New receivable">+</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function phoneHome() {
+    const months_en = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return {
+        stats: null,
+        warningsSummary: null,
+        greeting: '',
+        monthLabel: '',
+
+        async init() {
+            const h = new Date().getHours();
+            const salute = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+            this.greeting = `${salute}, {{ user_name or "there" }}`;
+            await Promise.all([this.loadStats(), this.loadWarnings()]);
+        },
+        async loadStats() {
+            try {
+                const res = await fetch('/api/home/stats');
+                if (!res.ok) return;
+                this.stats = await res.json();
+                this.monthLabel = `${months_en[(this.stats.month || 1) - 1]} ${this.stats.year}`;
+            } catch (e) { /* ignore */ }
+        },
+        async loadWarnings() {
+            try {
+                const r = await fetch('/api/warnings/summary');
+                if (r.ok) this.warningsSummary = await r.json();
+            } catch (e) { /* ignore */ }
+        },
+        formatMom(pct) {
+            if (pct === null || pct === undefined) return '';
+            const n = parseFloat(pct);
+            if (Number.isNaN(n)) return '';
+            const arrow = n > 0.05 ? '▲' : n < -0.05 ? '▼' : '—';
+            return `${arrow} ${Math.abs(n).toFixed(1)}% MoM`;
+        },
+    };
+}
+</script>
+{% endblock %}

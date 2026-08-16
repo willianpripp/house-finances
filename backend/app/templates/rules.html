@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+
+{% block title %}Categorization Rules — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="rulesPage()" x-init="init()">
+
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between mb-2">
+            <div>
+                <h2 class="text-2xl font-semibold text-slate-900">Categorization Rules</h2>
+                <p class="text-sm text-slate-600">
+                    Substring matched (lowercased) against the transaction description on every import.
+                    Lower <strong>priority</strong> wins — the first matching rule sets merchant + category.
+                </p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button @click="runRecategorize(true)"
+                        :disabled="recatBusy"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium bg-slate-200 hover:bg-slate-300 text-slate-700 disabled:opacity-50">
+                    Dry-run recategorize
+                </button>
+                <button @click="runRecategorize(false)"
+                        :disabled="recatBusy"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50">
+                    Recategorize Variable
+                </button>
+                <button @click="openCreate()"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white">
+                    + Add rule
+                </button>
+            </div>
+        </div>
+
+        <div x-show="recatResult" x-cloak class="mt-4 p-3 rounded-md border"
+             :class="recatDryRun ? 'border-slate-200 bg-slate-50' : 'border-emerald-200 bg-emerald-50'">
+            <p class="text-sm">
+                <span class="font-medium" x-text="recatDryRun ? 'Dry run' : 'Applied'"></span>:
+                examined <span class="font-medium" x-text="recatResult?.examined"></span> Variable rows,
+                <span class="font-medium" x-text="recatResult?.recategorized"></span> would recategorize
+                (<span x-text="recatResult?.new_merchants"></span> new merchants).
+            </p>
+            <details x-show="recatResult?.sample?.length" class="mt-2 text-xs">
+                <summary class="cursor-pointer text-slate-600">Sample (first 20)</summary>
+                <table class="mt-2 w-full text-xs">
+                    <thead><tr class="text-left text-slate-600">
+                        <th class="py-1">Date</th>
+                        <th class="py-1">Description</th>
+                        <th class="py-1">→ Merchant</th>
+                        <th class="py-1">Category</th>
+                        <th class="py-1">Keyword</th>
+                    </tr></thead>
+                    <tbody>
+                        <!-- `|| []` because x-for is evaluated even while the
+                             enclosing x-show is false, so a null recatResult
+                             threw on every page load. -->
+                        <template x-for="s in (recatResult?.sample || [])" :key="s.transaction_id">
+                            <tr class="border-t border-slate-200">
+                                <td class="py-1" x-text="s.date"></td>
+                                <td class="py-1 font-mono text-slate-700" x-text="s.description"></td>
+                                <td class="py-1" x-text="s.new_merchant"></td>
+                                <td class="py-1" x-text="s.new_category"></td>
+                                <td class="py-1 font-mono text-slate-500" x-text="s.matched_keyword"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </details>
+        </div>
+
+        <div class="mt-4">
+            <input type="text" x-model="search" @input.debounce.200ms=""
+                   placeholder="Filter by keyword / merchant / category…"
+                   class="w-full md:w-1/2 border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            <span class="ml-3 text-xs text-slate-500">
+                <span class="font-medium" x-text="filteredRules.length"></span> / <span x-text="rules.length"></span> rules
+            </span>
+        </div>
+    </div>
+
+    <!-- TABLE -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-slate-100 text-slate-700 text-left text-xs">
+                    <th colspan="5" class="p-0">
+                        <div class="grid grid-cols-[60px_1fr_1fr_1fr_120px]">
+                            <div class="px-3 py-2 font-medium">Prio</div>
+                            <div class="px-3 py-2 font-medium">Keyword (substring, lowercased)</div>
+                            <div class="px-3 py-2 font-medium">Merchant</div>
+                            <div class="px-3 py-2 font-medium">Category</div>
+                            <div class="px-3 py-2 font-medium text-right">Actions</div>
+                        </div>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="r in filteredRules" :key="r.id">
+                    <tr class="border-b border-slate-100"
+                        :class="editing?.id === r.id ? 'bg-blue-50' : 'hover:bg-slate-50'">
+                        <template x-if="editing?.id !== r.id">
+                            <td colspan="5" class="p-0">
+                                <div class="grid grid-cols-[60px_1fr_1fr_1fr_120px] items-center">
+                                    <div class="px-3 py-2 font-mono text-xs text-slate-700" x-text="r.priority"></div>
+                                    <div class="px-3 py-2 font-mono text-slate-800" x-text="r.keyword"></div>
+                                    <div class="px-3 py-2 text-slate-700" x-text="r.merchant_name"></div>
+                                    <div class="px-3 py-2">
+                                        <span x-text="(r.category_icon ? r.category_icon + ' ' : '') + r.category_name"></span>
+                                        <span class="ml-1 text-xs uppercase tracking-wide font-medium"
+                                              :class="r.category_type === 'fixed' ? 'text-amber-700' : 'text-emerald-700'"
+                                              x-text="r.category_type"></span>
+                                    </div>
+                                    <div class="px-3 py-2 text-right space-x-2">
+                                        <button @click="startEdit(r)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                        <button @click="askDelete(r)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
+                                    </div>
+                                </div>
+                            </td>
+                        </template>
+                        <template x-if="editing?.id === r.id">
+                            <td colspan="5" class="p-0">
+                                <div class="grid grid-cols-[60px_1fr_1fr_1fr_120px] items-center">
+                                    <div class="px-2 py-2">
+                                        <input type="number" min="1" max="999" x-model.number="editing.priority"
+                                               class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-center">
+                                    </div>
+                                    <div class="px-2 py-2">
+                                        <input type="text" x-model="editing.keyword"
+                                               class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs font-mono">
+                                    </div>
+                                    <div class="px-2 py-2">
+                                        <select @change="editing.merchant_id = parseInt($event.target.value)"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                            <template x-for="m in merchants" :key="m.id">
+                                                <option :value="m.id" :selected="m.id === editing.merchant_id" x-text="m.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div class="px-2 py-2">
+                                        <select @change="editing.category_id = parseInt($event.target.value)"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                            <template x-for="c in categories" :key="c.id">
+                                                <option :value="c.id" :selected="c.id === editing.category_id" x-text="(c.icon ? c.icon + ' ' : '') + c.name + ' (' + c.type + ')'"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div class="px-2 py-2 text-right space-x-2">
+                                        <button @click="saveEdit()" :disabled="saving"
+                                                class="text-emerald-700 hover:text-emerald-900 text-xs font-medium disabled:opacity-50">
+                                            <span x-show="!saving">Save</span>
+                                            <span x-show="saving">…</span>
+                                        </button>
+                                        <button @click="editing = null" class="text-slate-600 hover:text-slate-900 text-xs font-medium">Cancel</button>
+                                    </div>
+                                </div>
+                            </td>
+                        </template>
+                    </tr>
+                </template>
+                <tr x-show="!loading && filteredRules.length === 0">
+                    <td colspan="5" class="px-3 py-8 text-center text-slate-500 text-sm">No rules match this filter.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- CREATE MODAL -->
+    <div x-show="creating" x-cloak class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-3">Add rule</h3>
+            <div class="grid grid-cols-2 gap-3">
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Keyword (substring, will be lowercased)</label>
+                    <input type="text" x-model="newRule.keyword"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Priority (lower wins)</label>
+                    <input type="number" min="1" max="999" x-model.number="newRule.priority"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div></div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
+                    <select @change="newRule.merchant_id = parseInt($event.target.value)"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">Select…</option>
+                        <template x-for="m in merchants" :key="m.id">
+                            <option :value="m.id" :selected="m.id === newRule.merchant_id" x-text="m.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
+                    <select @change="newRule.category_id = parseInt($event.target.value)"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">Select…</option>
+                        <template x-for="c in categories" :key="c.id">
+                            <option :value="c.id" :selected="c.id === newRule.category_id" x-text="(c.icon ? c.icon + ' ' : '') + c.name + ' (' + c.type + ')'"></option>
+                        </template>
+                    </select>
+                </div>
+            </div>
+            <p x-show="createError" class="mt-3 text-sm text-rose-600" x-text="createError"></p>
+            <div class="flex justify-end gap-2 mt-4">
+                <button @click="creating = false; createError = ''" class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doCreate()" :disabled="creatingBusy || !canCreate()"
+                        :class="canCreate() && !creatingBusy ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                        class="px-4 py-2 rounded text-sm text-white font-medium">
+                    <span x-show="!creatingBusy">Create</span>
+                    <span x-show="creatingBusy">Saving…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE MODAL -->
+    <div x-show="confirmDelete" x-cloak class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-2">Delete rule?</h3>
+            <p class="text-sm text-slate-600 mb-4">
+                <span class="font-mono" x-text="confirmDelete?.keyword"></span> →
+                <span class="font-medium" x-text="confirmDelete?.merchant_name"></span> /
+                <span x-text="confirmDelete?.category_name"></span>
+            </p>
+            <p class="text-xs text-slate-500 mb-4">Future imports won't apply this mapping. Past transactions are unaffected.</p>
+            <div class="flex justify-end gap-2">
+                <button @click="confirmDelete = null" class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doDelete()" :disabled="deleting"
+                        class="px-4 py-2 rounded text-sm text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50">
+                    <span x-show="!deleting">Delete</span>
+                    <span x-show="deleting">Deleting…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function rulesPage() {
+    return {
+        rules: [],
+        categories: [],
+        merchants: [],
+        search: '',
+        loading: false,
+        editing: null,
+        saving: false,
+        confirmDelete: null,
+        deleting: false,
+        creating: false,
+        creatingBusy: false,
+        newRule: {},
+        createError: '',
+        recatBusy: false,
+        recatDryRun: false,
+        recatResult: null,
+
+        async init() {
+            await Promise.all([this.loadRules(), this.loadCategories(), this.loadMerchants()]);
+        },
+        async loadRules() {
+            this.loading = true;
+            const res = await fetch('/api/rules');
+            this.rules = await res.json();
+            this.loading = false;
+        },
+        async loadCategories() {
+            const res = await fetch('/api/categories');
+            this.categories = await res.json();
+        },
+        async loadMerchants() {
+            const res = await fetch('/api/merchants?limit=1000');
+            this.merchants = await res.json();
+        },
+
+        get filteredRules() {
+            const q = (this.search || '').toLowerCase();
+            if (!q) return this.rules;
+            return this.rules.filter(r =>
+                r.keyword.includes(q) ||
+                r.merchant_name.toLowerCase().includes(q) ||
+                r.category_name.toLowerCase().includes(q)
+            );
+        },
+
+        startEdit(r) {
+            this.editing = {
+                id: r.id, keyword: r.keyword, priority: r.priority,
+                merchant_id: r.merchant_id, category_id: r.category_id,
+            };
+        },
+        async saveEdit() {
+            if (!this.editing) return;
+            this.saving = true;
+            try {
+                const res = await fetch(`/api/rules/${this.editing.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        keyword: this.editing.keyword,
+                        priority: this.editing.priority,
+                        merchant_id: this.editing.merchant_id,
+                        category_id: this.editing.category_id,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.editing = null;
+                await this.loadRules();
+            } catch (e) {
+                alert(e.message);
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        askDelete(r) { this.confirmDelete = r; },
+        async doDelete() {
+            this.deleting = true;
+            try {
+                const res = await fetch(`/api/rules/${this.confirmDelete.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.confirmDelete = null;
+                await this.loadRules();
+            } catch (e) {
+                alert(e.message);
+            } finally {
+                this.deleting = false;
+            }
+        },
+
+        openCreate() {
+            this.newRule = { keyword: '', priority: 100, merchant_id: null, category_id: null };
+            this.createError = '';
+            this.creating = true;
+        },
+        canCreate() {
+            const r = this.newRule;
+            return r.keyword && r.merchant_id && r.category_id;
+        },
+        async runRecategorize(dryRun) {
+            this.recatBusy = true;
+            this.recatDryRun = dryRun;
+            this.recatResult = null;
+            try {
+                const res = await fetch(`/api/rules/recategorize-variable?dry_run=${dryRun}`, {method: 'POST'});
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.recatResult = await res.json();
+                if (!dryRun) {
+                    await this.loadRules();
+                }
+            } catch (e) {
+                alert(e.message);
+            } finally {
+                this.recatBusy = false;
+            }
+        },
+
+        async doCreate() {
+            if (!this.canCreate()) return;
+            this.creatingBusy = true;
+            this.createError = '';
+            try {
+                const res = await fetch('/api/rules', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(this.newRule),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.creating = false;
+                await this.loadRules();
+            } catch (e) {
+                this.createError = e.message;
+            } finally {
+                this.creatingBusy = false;
+            }
+        },
+    }
+}
+</script>
+<style>[x-cloak] { display: none !important; }</style>
+{% endblock %}

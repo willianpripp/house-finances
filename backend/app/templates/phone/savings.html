@@ -1,0 +1,449 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Savings — {{ app_name }}{% endblock %}
+{% block ptitle %}Savings{% endblock %}
+
+{% block content %}
+<div x-data="phoneSavings()" x-init="init()" class="space-y-3">
+
+    <!-- CURRENT BALANCES -->
+    <div class="pcard">
+        <div class="flex items-start justify-between mb-2">
+            <div>
+                <div class="text-base font-semibold text-slate-900">Savings</div>
+                <div class="text-xs text-slate-500">Latest balance per account</div>
+            </div>
+            <div class="text-xs text-slate-700 text-right">
+                <template x-for="(s, c) in current?.sum_by_currency || {}" :key="c">
+                    <div><span class="font-medium" x-text="c"></span> <span x-text="formatAmount(s)"></span></div>
+                </template>
+            </div>
+        </div>
+
+        <div x-show="dormantCount() > 0" class="mb-2">
+            <button @click="showDormant = !showDormant" class="text-xs text-slate-500 underline">
+                <span x-show="!showDormant" x-text="`Show ${dormantCount()} dormant account(s) (zero, no movement 60d)`"></span>
+                <span x-show="showDormant">Hide dormant accounts</span>
+            </button>
+        </div>
+
+        <template x-for="b in visibleSnapshots()" :key="b.id">
+            <!-- data-heatmap: themed island; dark mode must not invert its text. -->
+            <div class="flex items-center justify-between rounded-lg p-3 mb-2 last:mb-0" data-heatmap :style="heatmapStyle(b)">
+                <div class="min-w-0">
+                    <div class="text-sm font-medium truncate"
+                         :class="heatmapTextDark(b) ? 'text-slate-800' : 'text-white'"
+                         x-text="b.account_name"></div>
+                    <div class="text-xs"
+                         :class="heatmapTextDark(b) ? 'text-slate-500' : 'text-emerald-100'"
+                         x-text="formatDate(b.recorded_at)"></div>
+                </div>
+                <div class="text-right ml-3 shrink-0">
+                    <div class="flex items-center justify-end gap-1.5">
+                        <div class="text-sm font-semibold"
+                             :class="heatmapTextDark(b) ? 'text-slate-900' : 'text-white'"
+                             x-text="formatAmount(b.balance)"></div>
+                        <span x-show="b.mom_pct !== null && b.mom_pct !== undefined"
+                              class="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                              :class="momBadgeClass(b.mom_pct, heatmapTextDark(b))"
+                              x-text="formatMom(b.mom_pct)"
+                              :title="b.prev_balance !== null ? `Last month: ${formatAmount(b.prev_balance)}` : ''"></span>
+                    </div>
+                    <div class="text-xs"
+                         :class="heatmapTextDark(b) ? 'text-slate-400' : 'text-emerald-100'"
+                         x-text="b.currency"></div>
+                    <div class="text-[10px] font-mono"
+                         :class="heatmapTextDark(b) ? 'text-slate-400' : 'text-emerald-100/80'"
+                         x-text="formatCounterCurrency(b.balance, b.currency)"></div>
+                </div>
+            </div>
+        </template>
+        <div x-show="!loading && (current?.snapshots || []).length === 0" class="text-center text-slate-500 text-sm py-4">
+            No accounts yet — tap + to add a snapshot.
+        </div>
+    </div>
+
+    <!-- HISTORY FILTERS -->
+    <div class="pcard">
+        <div class="flex items-center justify-between mb-2">
+            <div class="text-xs uppercase tracking-wide font-semibold text-slate-500">History</div>
+            <div class="text-xs text-slate-500">
+                <span x-text="(history?.snapshots || []).length"></span> snapshot(s)
+                <template x-for="(s, c) in history?.sum_by_currency || {}" :key="c">
+                    <span class="ml-1">· <span class="font-medium" x-text="c"></span> <span x-text="formatAmount(s)"></span></span>
+                </template>
+            </div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+            <select x-model="filters.account_name" @change="reloadHistory()"
+                    class="col-span-2 w-full border border-slate-300 rounded-md px-2 py-2 text-sm bg-white">
+                <option value="">All accounts</option>
+                <template x-for="name in accountNames" :key="name">
+                    <option :value="name" x-text="name"></option>
+                </template>
+            </select>
+            <input type="date" x-model="filters.from_date" @change="reloadHistory()"
+                   class="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
+            <input type="date" x-model="filters.to_date" @change="reloadHistory()"
+                   class="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+            <button @click="resetFilters()" class="text-slate-600 underline">Reset</button>
+            <span x-show="loading" class="text-slate-500">Loading…</span>
+            <span x-show="errorMessage" class="text-rose-600" x-text="errorMessage"></span>
+        </div>
+    </div>
+
+    <!-- HISTORY GROUPED BY DATE -->
+    <template x-for="group in groupedHistory()" :key="group.date">
+        <div class="pcard">
+            <div class="flex items-center justify-between mb-1">
+                <div class="text-sm font-semibold text-slate-800" x-text="group.date"></div>
+                <div class="text-xs text-slate-600">
+                    <template x-for="(s, c) in group.sums" :key="c">
+                        <span class="ml-2"><span class="font-medium" x-text="c"></span> <span x-text="formatAmount(s)"></span></span>
+                    </template>
+                </div>
+            </div>
+            <template x-for="s in group.entries" :key="s.id">
+                <div>
+                    <div class="prow" @click="expanded = expanded === s.id ? null : s.id">
+                        <span class="grow">
+                            <span class="text-sm font-medium text-slate-800" x-text="s.account_name"></span>
+                            <span class="block text-xs text-slate-500" x-text="s.currency + ' · ' + formatDate(s.recorded_at)"></span>
+                        </span>
+                        <span class="text-sm font-semibold text-slate-900 whitespace-nowrap" x-text="formatAmount(s.balance)"></span>
+                    </div>
+                    <div x-show="expanded === s.id" x-cloak class="flex gap-2 py-2 pl-2">
+                        <button @click="openEdit(s)" class="text-xs border border-blue-300 text-blue-700 rounded px-3 py-1.5">Edit</button>
+                        <button @click="del(s)" class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </template>
+    <div x-show="!loading && (history?.snapshots || []).length === 0" class="pcard text-center text-slate-500 text-sm py-6">
+        No snapshots match these filters.
+    </div>
+
+    <!-- ADD / EDIT SNAPSHOT bottom sheet -->
+    <div x-show="sheetOpen" x-cloak>
+        <div class="psheet-backdrop" @click="sheetOpen = false"></div>
+        <div class="psheet space-y-3">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900" x-text="editingId ? 'Edit snapshot' : 'Add snapshot'"></div>
+                <button @click="sheetOpen = false" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Account</label>
+                <input type="text" list="account-names" x-model="form.account_name" placeholder="Type or select"
+                       class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm">
+                <datalist id="account-names">
+                    <template x-for="name in accountNames" :key="name">
+                        <option :value="name"></option>
+                    </template>
+                </datalist>
+            </div>
+
+            <div class="flex gap-2">
+                <div class="flex-1">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Balance</label>
+                    <input type="number" step="0.01" x-model.number="form.balance"
+                           class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm text-right">
+                </div>
+                <div class="w-24">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Currency</label>
+                    <select x-model="form.currency" class="w-full border border-slate-300 rounded-md px-2 py-2 text-sm bg-white">
+                        <option value="USD">USD</option>
+                        <option value="BRL">BRL</option>
+                    </select>
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+                <input type="date" x-model="form.recorded_date" class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm">
+            </div>
+
+            <button @click="submitForm()" :disabled="saving || !canSubmit()"
+                    :class="(canSubmit() && !saving) ? 'bg-emerald-600' : 'bg-slate-300'"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium disabled:opacity-60">
+                <span x-show="!saving" x-text="editingId ? 'Save' : 'Add'"></span>
+                <span x-show="saving">Saving…</span>
+            </button>
+            <p x-show="formError" class="text-sm text-rose-600" x-text="formError"></p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<!-- Outside the page's x-data scope, so it talks to it via a window event. -->
+<button class="pfab" x-data @click="window.dispatchEvent(new CustomEvent('open-new-snapshot'))" title="Add snapshot">+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function phoneSavings() {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+        accountNames: [],
+        current: null,
+        history: null,
+        filters: {account_name: '', from_date: '', to_date: ''},
+        showDormant: false,
+        loading: false,
+        saving: false,
+        deleting: false,
+        expanded: null,
+        sheetOpen: false,
+        editingId: null,
+        errorMessage: '',
+        formError: '',
+        effectiveRate: null,
+        form: {
+            account_name: '',
+            balance: null,
+            currency: 'USD',
+            recorded_date: today,
+        },
+
+        async init() {
+            window.addEventListener('open-new-snapshot', () => { this.openNew(); });
+            if (new URLSearchParams(location.search).get('new')) this.openNew();
+            await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory(), this.loadRate()]);
+        },
+
+        async loadRate() {
+            const res = await fetch('/api/exchange-rates?limit=1');
+            if (!res.ok) return;
+            const data = await res.json();
+            const r = data.rates?.[0] || data[0];
+            if (r) this.effectiveRate = parseFloat(r.effective);
+        },
+
+        // Phase 14 — heatmap + MoM helpers (verbatim from desktop savingsPage()).
+        // Floor: balances under $200 USD-equivalent stay gray regardless of
+        // where they fall in the global min/max. Prevents a near-zero account
+        // from "winning" the dark-green tier on an empty-balances day.
+        heatmapPosition(b) {
+            const bounds = this.current?.heatmap_bounds;
+            if (!bounds) return null;
+            const usd = parseFloat(b.usd_equivalent);
+            if (Number.isNaN(usd)) return null;
+            if (usd < 200) return 0;  // floor → gray
+            const min = parseFloat(bounds.min_usd);
+            const max = parseFloat(bounds.max_usd);
+            if (max <= min) return 1;
+            return Math.max(0, Math.min(1, (usd - min) / (max - min)));
+        },
+        heatmapStyle(b) {
+            const pos = this.heatmapPosition(b);
+            if (pos === null || pos === 0) return 'background: #f8fafc;';  // slate-50
+            // Interpolate slate-50 (248,250,252) → emerald-700 (4,120,87).
+            const r = Math.round(248 + (4 - 248) * pos);
+            const g = Math.round(250 + (120 - 250) * pos);
+            const bl = Math.round(252 + (87 - 252) * pos);
+            return `background: rgb(${r}, ${g}, ${bl});`;
+        },
+        heatmapTextDark(b) {
+            const pos = this.heatmapPosition(b);
+            return pos === null || pos < 0.55;
+        },
+        formatMom(pct) {
+            if (pct === null || pct === undefined) return '—';
+            const n = parseFloat(pct);
+            if (Number.isNaN(n)) return '—';
+            const arrow = n > 0.05 ? '▲' : n < -0.05 ? '▼' : '—';
+            return `${arrow} ${Math.abs(n).toFixed(1)}%`;
+        },
+        momBadgeClass(pct, lightBg) {
+            const n = parseFloat(pct);
+            if (Number.isNaN(n)) return lightBg ? 'bg-slate-200 text-slate-600' : 'bg-white/30 text-white';
+            if (n > 0.05) return lightBg ? 'bg-emerald-100 text-emerald-800' : 'bg-emerald-300/30 text-emerald-50';
+            if (n < -0.05) return lightBg ? 'bg-rose-100 text-rose-800' : 'bg-rose-300/30 text-rose-50';
+            return lightBg ? 'bg-slate-200 text-slate-600' : 'bg-white/30 text-white';
+        },
+
+        formatCounterCurrency(balance, currency) {
+            const rate = parseFloat(this.effectiveRate);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(balance);
+            if (Number.isNaN(n)) return '';
+            if (currency === 'USD') {
+                return `≈ R$ ${(n * rate).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+            return `≈ $${(n / rate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+
+        async reloadCurrent() {
+            try {
+                const res = await fetch('/api/savings/current');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.current = await res.json();
+            } catch (e) {
+                this.errorMessage = e.message;
+            }
+        },
+
+        async reloadAccounts() {
+            try {
+                const res = await fetch('/api/savings/accounts');
+                this.accountNames = await res.json();
+            } catch (e) { /* ignore */ }
+        },
+
+        buildHistoryQuery() {
+            const params = new URLSearchParams();
+            if (this.filters.account_name) params.set('account_name', this.filters.account_name);
+            if (this.filters.from_date) params.set('from', this.filters.from_date + 'T00:00:00');
+            if (this.filters.to_date) params.set('to', this.filters.to_date + 'T23:59:59');
+            return params.toString();
+        },
+
+        async reloadHistory() {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch('/api/savings/snapshots?' + this.buildHistoryQuery());
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.history = await res.json();
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        groupedHistory() {
+            if (!this.history?.snapshots) return [];
+            const groups = new Map();
+            for (const s of this.history.snapshots) {
+                const date = (s.recorded_at || '').slice(0, 10);
+                if (!groups.has(date)) {
+                    groups.set(date, {date, entries: [], sums: {}});
+                }
+                const g = groups.get(date);
+                g.entries.push(s);
+                g.sums[s.currency] = (parseFloat(g.sums[s.currency] || 0) + parseFloat(s.balance)).toFixed(2);
+            }
+            return Array.from(groups.values());
+        },
+
+        resetFilters() {
+            this.filters = {account_name: '', from_date: '', to_date: ''};
+            this.reloadHistory();
+        },
+
+        openNew() {
+            this.editingId = null;
+            this.form = {account_name: '', balance: null, currency: 'USD', recorded_date: today};
+            this.formError = '';
+            this.sheetOpen = true;
+        },
+
+        openEdit(s) {
+            this.editingId = s.id;
+            this.form = {
+                account_name: s.account_name,
+                balance: parseFloat(s.balance),
+                currency: s.currency,
+                recorded_date: (s.recorded_at || '').slice(0, 10),
+            };
+            this.formError = '';
+            this.expanded = null;
+            this.sheetOpen = true;
+        },
+
+        canSubmit() {
+            return this.form.account_name && this.form.balance !== null && this.form.balance !== '';
+        },
+
+        async submitForm() {
+            this.saving = true;
+            this.formError = '';
+            try {
+                const body = {
+                    account_name: this.form.account_name.trim(),
+                    balance: this.form.balance,
+                    currency: this.form.currency,
+                };
+                if (this.form.recorded_date) {
+                    body.recorded_at = this.form.recorded_date + 'T12:00:00';
+                }
+                let res;
+                if (this.editingId) {
+                    res = await fetch(`/api/savings/snapshots/${this.editingId}`, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                } else {
+                    res = await fetch('/api/savings/snapshots', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.sheetOpen = false;
+                this.editingId = null;
+                await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory()]);
+            } catch (e) {
+                this.formError = e.message;
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        async del(s) {
+            if (!confirm(`Delete ${s.account_name} · ${this.formatAmount(s.balance)} ${s.currency} · ${this.formatDate(s.recorded_at)}? This cannot be undone.`)) return;
+            this.deleting = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch(`/api/savings/snapshots/${s.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.expanded = null;
+                await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory()]);
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.deleting = false;
+            }
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === '') return '';
+            const n = parseFloat(amount);
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        // ENH-4: dormant = zero balance AND latest snapshot >60d old.
+        dormant(b) {
+            if (parseFloat(b.balance) !== 0) return false;
+            if (!b.recorded_at) return true;
+            return (Date.now() - new Date(b.recorded_at).getTime()) / 86400000 > 60;
+        },
+        dormantCount() {
+            return (this.current?.snapshots || []).filter(b => this.dormant(b)).length;
+        },
+        visibleSnapshots() {
+            const all = this.current?.snapshots || [];
+            return this.showDormant ? all : all.filter(b => !this.dormant(b));
+        },
+        formatDate(iso) {
+            if (!iso) return '';
+            return iso.slice(0, 10);
+        },
+    }
+}
+</script>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

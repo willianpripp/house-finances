@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link rel="manifest" href="{{ base }}/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="{{ base }}/static/img/icon-192.png?v=1">
+    <meta name="theme-color" content="#0f172a">
+    <script>
+        // Apply persisted theme before Tailwind/Alpine load — prevents a flash
+        // of light content on dark-mode page load. Same key as the desktop UI.
+        (function() {
+            try {
+                var pref = localStorage.getItem('hf_theme');
+                if (pref === 'dark') document.documentElement.classList.add('dark');
+            } catch (e) { /* localStorage may be blocked — fall back to light */ }
+        })();
+    </script>
+    <script>
+        // Muzzle Tailwind's unconditional production warning — see desktop base.html.
+        window.__warn = console.warn;
+        console.warn = function (m) {
+            if (typeof m === 'string' && m.indexOf('cdn.tailwindcss.com') === 0) return;
+            window.__warn.apply(console, arguments);
+        };
+    </script>
+    {# Vendored, not CDN — see static/vendor/README.md. #}
+    <script src="/static/vendor/tailwind-3.4.17.js"></script>
+    <script>
+        console.warn = window.__warn;
+        if (window.tailwind) {
+            tailwind.config = { darkMode: 'class' };
+        }
+    </script>
+    <script defer src="/static/vendor/alpine-3.14.1.min.js"></script>
+    <!-- Path-relative on purpose, NOT url_for() — see desktop base.html. -->
+    <link rel="stylesheet" href="/static/css/styles.css?v=16a0">
+    <link rel="stylesheet" href="/static/css/phone.css?v=1">
+    <style>
+        html.dark, html.dark body { background-color: #0f172a !important; color: #e2e8f0 !important; }
+        html.dark .bg-white { background-color: #1e293b !important; }
+        html.dark .border-slate-200 { border-color: #334155 !important; }
+    </style>
+</head>
+<body class="phone-ui bg-slate-50 text-slate-800 min-h-screen">
+    <header class="ptop" x-data="themeNav()">
+        {# 🏠 = household portal; app-home lives in the bottom tab bar.
+           Deployment config: no portal_url, no icon (a title-only header). #}
+        {% if portal_url %}
+        <a href="{{ portal_url }}" title="Home portal"
+           class="text-lg leading-none no-underline p-2 -m-2">🏠</a>
+        {% else %}
+        <span class="text-lg leading-none p-2 -m-2" aria-hidden="true"></span>
+        {% endif %}
+        <div class="ptitle text-slate-900">{% block ptitle %}{{ app_name }}{% endblock %}</div>
+        <button @click="toggleTheme()" class="text-base leading-none">
+            <span x-show="theme === 'light'">🌙</span>
+            <span x-show="theme === 'dark'">☀️</span>
+        </button>
+    </header>
+
+    <main class="pmain">
+        {% block content %}{% endblock %}
+
+        <form method="post" action="/ui" class="pswitch">
+            <button name="choice" value="desktop" type="submit">Desktop version</button>
+        </form>
+    </main>
+
+    {% block fab %}{% endblock %}
+
+    <nav class="ptabs">
+        <a href="/" class="{{ 'on' if request.url.path == '/' else '' }}"><b>🏠</b>Home</a>
+        <a href="/receivables" class="{{ 'on' if request.url.path == '/receivables' else '' }}"><b>🤝</b>Receivables</a>
+        <a href="/transactions" class="{{ 'on' if request.url.path == '/transactions' else '' }}"><b>✏️</b>Transactions</a>
+        <a href="/reports/monthly" class="{{ 'on' if request.url.path.startswith('/reports') else '' }}"><b>📊</b>Monthly</a>
+    </nav>
+
+    <script>
+        function themeNav() {
+            return {
+                theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+                toggleTheme() {
+                    this.theme = this.theme === 'dark' ? 'light' : 'dark';
+                    document.documentElement.classList.toggle('dark', this.theme === 'dark');
+                    try { localStorage.setItem('hf_theme', this.theme); } catch (e) { /* ignore */ }
+                },
+            };
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

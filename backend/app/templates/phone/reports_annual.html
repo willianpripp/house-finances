@@ -1,0 +1,303 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Annual — {{ app_name }}{% endblock %}
+{% block ptitle %}Annual Report{% endblock %}
+
+{% block content %}
+<div x-data="phoneAnnual()" x-init="init()" class="space-y-3">
+
+    <!-- YEAR PICKER -->
+    <div class="pcard">
+        <div class="flex items-center gap-2">
+            <button @click="prevYear()" class="px-4 py-2 text-lg border border-slate-300 rounded-lg text-slate-600">‹</button>
+            <select @change="year = parseInt($event.target.value); reload()"
+                    class="flex-1 border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white text-center">
+                <template x-for="y in years" :key="y">
+                    <option :value="y" :selected="y === year" x-text="y"></option>
+                </template>
+            </select>
+            <button @click="nextYear()" class="px-4 py-2 text-lg border border-slate-300 rounded-lg text-slate-600">›</button>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Each month is sourced from its finalized snapshot when closed; otherwise live-computed at the rate active that month.</p>
+    </div>
+
+    <!-- AGGREGATES (always rendered; fallback x_text returns '—' when report null) -->
+    <div class="grid grid-cols-2 gap-2">
+        <div class="pcard" style="background: rgba(16, 185, 129, 0.08);">
+            <div class="text-xs uppercase font-medium text-emerald-700">Net income YTD</div>
+            <div class="text-lg font-semibold text-emerald-900" x-text="formatUsd(report?.net_income_usd)"></div>
+            <div class="text-[10px] text-emerald-600 font-mono" x-text="formatBrl(report?.net_income_usd)"></div>
+            <div class="text-xs text-emerald-700 mt-0.5">
+                Gross <span x-text="formatUsd(report?.gross_income_usd)"></span> ·
+                Taxes <span x-text="formatUsd(report?.taxes_usd)"></span>
+            </div>
+        </div>
+        <div class="pcard" style="background: rgba(244, 63, 94, 0.08);">
+            <div class="text-xs uppercase font-medium text-rose-700">Spending YTD</div>
+            <div class="text-lg font-semibold text-rose-900" x-text="formatUsd(report?.total_spending_usd)"></div>
+            <div class="text-[10px] text-rose-600 font-mono" x-text="formatBrl(report?.total_spending_usd)"></div>
+            <div class="text-xs text-rose-700 mt-0.5">
+                Fixed <span x-text="formatUsd(report?.fixed_spending_usd)"></span> ·
+                Var <span x-text="formatUsd(report?.variable_spending_usd)"></span>
+            </div>
+        </div>
+        <div class="pcard" style="background: rgba(59, 130, 246, 0.08);">
+            <div class="text-xs uppercase font-medium text-blue-700">Surplus YTD</div>
+            <div class="text-lg font-semibold text-blue-900" x-text="formatUsd(report?.surplus_usd)"></div>
+            <div class="text-[10px] text-blue-600 font-mono" x-text="formatBrl(report?.surplus_usd)"></div>
+        </div>
+        <div class="pcard">
+            <div class="text-xs uppercase font-medium text-slate-700">Net worth (latest)</div>
+            <div class="text-lg font-semibold" :class="parseFloat(report?.end_net_worth_usd || 0) >= 0 ? 'text-slate-900' : 'text-rose-700'"
+                 x-text="formatUsd(report?.end_net_worth_usd)"></div>
+            <div class="text-[10px] text-slate-500 font-mono" x-text="formatBrl(report?.end_net_worth_usd)"></div>
+            <div class="text-xs text-slate-600 mt-0.5">
+                Savings <span x-text="formatUsd(report?.end_savings_usd)"></span> ·
+                Debt <span x-text="formatUsd(report?.end_debt_usd)"></span>
+            </div>
+        </div>
+        <div class="pcard col-span-2" style="background: rgba(139, 92, 246, 0.08);">
+            <div class="text-xs uppercase font-medium text-violet-700">Total Worth (latest)</div>
+            <div class="text-lg font-semibold" :class="parseFloat(report?.end_total_worth_usd || 0) >= 0 ? 'text-violet-900' : 'text-rose-700'"
+                 x-text="formatUsd(report?.end_total_worth_usd)"></div>
+            <div class="text-[10px] text-violet-500 font-mono" x-text="formatBrl(report?.end_total_worth_usd)"></div>
+            <div class="text-xs text-violet-700 mt-0.5">
+                Net worth + Assets
+                (<span x-text="formatUsd(report?.end_assets_usd)"></span>)
+            </div>
+        </div>
+    </div>
+
+    <!-- CHARTS (always-mounted; canvases stay in the DOM so Chart.js doesn't
+         lose them across an x-show toggle). -->
+    <div class="pcard">
+        <h3 class="text-sm font-semibold text-slate-800 mb-2">Worth trajectory (Net + Total)</h3>
+        <div class="relative" style="height: 220px;">
+            <canvas x-ref="netWorthChart"></canvas>
+        </div>
+    </div>
+    <div class="pcard">
+        <h3 class="text-sm font-semibold text-slate-800 mb-2">Surplus per month</h3>
+        <div class="relative" style="height: 200px;">
+            <canvas x-ref="surplusChart"></canvas>
+        </div>
+    </div>
+    <div class="pcard">
+        <h3 class="text-sm font-semibold text-slate-800 mb-2">Spending (Fixed vs Variable vs Taxes)</h3>
+        <div class="relative" style="height: 220px;">
+            <canvas x-ref="spendingChart"></canvas>
+        </div>
+    </div>
+    <div class="pcard">
+        <h3 class="text-sm font-semibold text-slate-800 mb-2">
+            Top spending categories (YTD)
+            <span class="block text-xs font-normal text-slate-500">Taxes excluded; FIXED + VARIABLE combined</span>
+        </h3>
+        <div class="relative" style="height: 380px;">
+            <canvas x-ref="topCategoriesChart"></canvas>
+        </div>
+    </div>
+
+    <!-- PER-MONTH ROWS (always rendered) -->
+    <div class="pcard">
+        <div class="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-1">Per month</div>
+        <template x-for="m in report?.months || []" :key="m.month">
+            <div class="prow" :class="!hasActivity(m) ? 'opacity-50' : ''">
+                <span class="grow min-w-0">
+                    <span class="flex items-center gap-1">
+                        <span class="text-sm font-medium text-slate-800" x-text="monthName(m.month)"></span>
+                        <span x-show="m.is_finalized" class="shrink-0 inline-block px-1.5 py-0.5 text-[10px] bg-emerald-100 text-emerald-800 rounded">FINAL</span>
+                        <span x-show="!m.is_finalized && hasActivity(m)" class="shrink-0 inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded">LIVE</span>
+                    </span>
+                    <span class="block text-xs text-slate-500"
+                          x-text="'Gross ' + formatUsd(m.gross_income_usd) + ' · Taxes ' + formatUsd(m.taxes_usd) + ' · Fixed ' + formatUsd(m.fixed_spending_usd) + ' · Var ' + formatUsd(m.variable_spending_usd)"></span>
+                </span>
+                <span class="text-right shrink-0">
+                    <span class="block text-sm font-medium text-emerald-700" x-text="'Net ' + formatUsd(m.net_income_usd)"></span>
+                    <span class="block text-xs font-medium" :class="parseFloat(m.surplus_usd) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                          x-text="'Surplus ' + formatUsd(m.surplus_usd)"></span>
+                    <span class="block text-[10px] font-mono" :class="parseFloat(m.net_worth_usd) >= 0 ? 'text-slate-500' : 'text-rose-700'"
+                          x-text="'NW ' + formatUsd(m.net_worth_usd)"></span>
+                </span>
+            </div>
+        </template>
+        <div x-show="!(report?.months || []).length" class="text-sm text-slate-400 py-4 text-center">No data for this year.</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/vendor/chart-4.4.4.min.js"></script>
+<script>
+function phoneAnnual() {
+    const today = new Date();
+    return {
+        year: today.getFullYear(),
+        years: (() => { const y = today.getFullYear(); return [y - 2, y - 1, y, y + 1]; })(),
+        report: null,
+        charts: { netWorth: null, surplus: null, spending: null, topCategories: null },
+
+        async init() {
+            await this.reload();
+        },
+
+        prevYear() {
+            this.year -= 1;
+            this.reload();
+        },
+        nextYear() {
+            this.year += 1;
+            this.reload();
+        },
+
+        async reload() {
+            const res = await fetch(`/api/reports/annual?year=${this.year}`);
+            this.report = await res.json();
+            // x-show toggles display via CSS on the same tick — Chart.js needs the
+            // canvas to have non-zero CSS dimensions or it renders 0x0. Wait an
+            // animation frame after $nextTick so layout settles before drawing.
+            this.$nextTick(() => requestAnimationFrame(() => this.drawCharts()));
+        },
+
+        hasActivity(m) {
+            return parseFloat(m.gross_income_usd || 0) !== 0
+                || parseFloat(m.total_spending_usd || 0) !== 0
+                || parseFloat(m.total_savings_usd || 0) !== 0
+                || parseFloat(m.total_debt_usd || 0) !== 0;
+        },
+
+        monthName(m) {
+            return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+        },
+
+        formatUsd(v) {
+            if (v === null || v === undefined || v === '') return '—';
+            const n = parseFloat(v);
+            if (Number.isNaN(n)) return '—';
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        latestRate() {
+            // Use the latest active month's exchange_rate for BRL conversion.
+            if (!this.report?.months) return null;
+            const active = this.report.months.filter(m => this.hasActivity(m));
+            const last = active[active.length - 1];
+            return last?.rate_effective ? parseFloat(last.rate_effective) : null;
+        },
+        formatBrl(v) {
+            const rate = this.latestRate();
+            if (!rate || v === null || v === undefined || v === '') return '';
+            const n = parseFloat(v);
+            if (Number.isNaN(n)) return '';
+            const brl = n * rate;
+            const sign = brl < 0 ? '-' : '';
+            return `${sign}R$ ${Math.abs(brl).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+
+        drawCharts() {
+            if (!this.report) return;
+            const labels = this.report.months.map(m => this.monthName(m.month));
+            const active = this.report.months.map(m => this.hasActivity(m));
+
+            // Destroy previous instances.
+            for (const k of Object.keys(this.charts)) {
+                if (this.charts[k]) { this.charts[k].destroy(); this.charts[k] = null; }
+            }
+
+            const baseOpts = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+            };
+
+            this.charts.netWorth = new Chart(this.$refs.netWorthChart, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Net worth (liquid)',
+                            data: this.report.months.map((m, i) => active[i] ? parseFloat(m.net_worth_usd) : null),
+                            borderColor: '#0f172a',
+                            backgroundColor: 'rgba(15,23,42,0.1)',
+                            spanGaps: true,
+                            tension: 0.2,
+                        },
+                        {
+                            label: 'Total Worth (with assets)',
+                            data: this.report.months.map((m, i) => active[i] ? parseFloat(m.total_worth_usd) : null),
+                            borderColor: '#7c3aed',
+                            backgroundColor: 'rgba(124,58,237,0.1)',
+                            borderDash: [4, 4],
+                            spanGaps: true,
+                            tension: 0.2,
+                        },
+                    ],
+                },
+                options: {
+                    ...baseOpts,
+                    plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+                },
+            });
+
+            this.charts.surplus = new Chart(this.$refs.surplusChart, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Surplus',
+                        data: this.report.months.map((m, i) => active[i] ? parseFloat(m.surplus_usd) : null),
+                        backgroundColor: this.report.months.map(m => parseFloat(m.surplus_usd) >= 0 ? '#10b981' : '#ef4444'),
+                    }],
+                },
+                options: { ...baseOpts, plugins: { legend: { display: false } } },
+            });
+
+            this.charts.spending = new Chart(this.$refs.spendingChart, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Fixed',    data: this.report.months.map((m, i) => active[i] ? parseFloat(m.fixed_spending_usd) : null), backgroundColor: '#8e44ad' },
+                        { label: 'Variable', data: this.report.months.map((m, i) => active[i] ? parseFloat(m.variable_spending_usd) : null), backgroundColor: '#f59e0b' },
+                        { label: 'Taxes',    data: this.report.months.map((m, i) => active[i] ? parseFloat(m.taxes_usd) : null), backgroundColor: '#64748b' },
+                    ],
+                },
+                options: {
+                    ...baseOpts,
+                    scales: { x: { stacked: true }, y: { stacked: true } },
+                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+                },
+            });
+
+            const tops = this.report.top_categories || [];
+            this.charts.topCategories = new Chart(this.$refs.topCategoriesChart, {
+                type: 'bar',
+                data: {
+                    labels: tops.map(c => `${c.category_icon ? c.category_icon + ' ' : ''}${c.category_name} (${c.category_type === 'fixed' ? 'F' : 'V'})`),
+                    datasets: [{
+                        label: 'Total spent (USD)',
+                        data: tops.map(c => parseFloat(c.amount_usd)),
+                        backgroundColor: tops.map(c => c.color || (c.category_type === 'fixed' ? '#8e44ad' : '#f59e0b')),
+                    }],
+                },
+                options: {
+                    ...baseOpts,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => `$${ctx.parsed.x.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`,
+                            },
+                        },
+                    },
+                    scales: { x: { beginAtZero: true } },
+                },
+            });
+        },
+    }
+}
+</script>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

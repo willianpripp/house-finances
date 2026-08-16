@@ -1,0 +1,750 @@
+{% extends "base.html" %}
+
+{% block title %}Transactions — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="transactionsPage()" x-init="init()">
+
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <h2 class="text-2xl font-semibold text-slate-900">Transactions</h2>
+                <p class="text-sm text-slate-600">Filter, edit, and clean up imported rows.</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="text-sm text-slate-500">
+                    <span class="font-medium text-slate-700" x-text="result?.total_count ?? 0"></span>
+                    row(s)
+                    <template x-for="(s, c) in result?.sum_by_currency || {}" :key="c">
+                        <span class="ml-3">·
+                            <span class="font-medium" x-text="c"></span>
+                            <span x-text="formatAmount(s)"></span>
+                        </span>
+                    </template>
+                </div>
+                <button @click="openCreate()"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white">
+                    + Add
+                </button>
+            </div>
+        </div>
+
+        <!-- FILTERS -->
+        <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Year</label>
+                <select x-model.number="filters.year" @change="reload()"
+                        class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <template x-for="y in years" :key="y">
+                        <option :value="y" x-text="y"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Month</label>
+                <select x-model.number="filters.month" @change="reload()"
+                        class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <template x-for="(name, idx) in monthNames" :key="idx">
+                        <option :value="idx + 1" x-text="name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
+                <select x-model.number="filters.category_id" @change="reload()"
+                        class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <template x-for="c in categories" :key="c.id">
+                        <option :value="c.id" x-text="`${c.icon ? c.icon + ' ' : ''}${c.name} (${c.type})`"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Payment Method</label>
+                <select x-model.number="filters.payment_method_id" @change="reload()"
+                        class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <template x-for="pm in paymentMethods" :key="pm.id">
+                        <option :value="pm.id" x-text="`${pm.name} (${pm.currency})`"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Currency</label>
+                <select x-model="filters.currency" @change="reload()"
+                        class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <option value="USD">USD</option>
+                    <option value="BRL">BRL</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Search</label>
+                <input type="text" x-model="filters.search" @input.debounce.400ms="reload()"
+                       placeholder="merchant or description"
+                       class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            </div>
+        </div>
+
+        <div class="mt-3 flex items-center gap-3 text-sm">
+            <button @click="resetFilters()" class="text-slate-600 hover:text-slate-900">
+                Reset filters
+            </button>
+            <span x-show="loading" class="text-slate-500">Loading…</span>
+            <span x-show="errorMessage" class="text-rose-600" x-text="errorMessage"></span>
+        </div>
+    </div>
+
+    <!-- TABLE -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-slate-100 text-slate-700 text-left">
+                        <th colspan="8" class="p-0">
+                            <div class="grid grid-cols-[110px_1fr_1fr_1fr_2fr_150px_120px_120px]">
+                                <div class="px-3 py-2 font-medium whitespace-nowrap">Date</div>
+                                <div class="px-3 py-2 font-medium">Merchant</div>
+                                <div class="px-3 py-2 font-medium">Category</div>
+                                <div class="px-3 py-2 font-medium">Payment</div>
+                                <div class="px-3 py-2 font-medium">Description</div>
+                                <div class="px-3 py-2 font-medium text-center">Type / Installment</div>
+                                <div class="px-3 py-2 font-medium text-right whitespace-nowrap">Amount</div>
+                                <div class="px-3 py-2 font-medium text-right">Actions</div>
+                            </div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="t in visibleRows()" :key="t.id">
+                        <tr class="border-b border-slate-100 hover:bg-slate-50"
+                            :class="editing?.id === t.id ? 'bg-blue-50' : ''">
+                            <!-- DISPLAY MODE -->
+                            <template x-if="editing?.id !== t.id">
+                                <td colspan="8" class="p-0">
+                                    <div class="grid grid-cols-[110px_1fr_1fr_1fr_2fr_150px_120px_120px] items-center">
+                                        <div class="px-3 py-2 text-slate-700 whitespace-nowrap" x-text="t.transaction_date"></div>
+                                        <div class="px-3 py-2 text-slate-800 font-medium" x-text="t.merchant_name"></div>
+                                        <div class="px-3 py-2">
+                                            <span class="inline-block px-2 py-0.5 text-xs rounded text-white"
+                                                  :style="`background-color: ${t.category_color}`"
+                                                  x-text="(t.category_icon ? t.category_icon + ' ' : '') + t.category_name"></span>
+                                        </div>
+                                        <div class="px-3 py-2 text-slate-600 text-xs" x-text="t.payment_method_name"></div>
+                                        <div class="px-3 py-2 text-slate-500 truncate text-xs" :title="t.description" x-text="t.description"></div>
+                                        <div class="px-3 py-2 text-center space-y-0.5">
+                                            <template x-if="t.recurrence_kind">
+                                                <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium font-mono"
+                                                      :class="kindBadgeClass(t.recurrence_kind)"
+                                                      x-text="kindBadgeLabel(t.recurrence_kind)"
+                                                      :title="t.contract_end_date ? `ends ${t.contract_end_date}` : ''"></span>
+                                            </template>
+                                            <template x-if="t.installment_total > 1">
+                                                <span class="inline-block px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-800 font-medium"
+                                                      :title="t.installment_value ? `Per installment: ${formatAmount(t.installment_value)}` : ''"
+                                                      x-text="`${t.installment_current}/${t.installment_total}`"></span>
+                                            </template>
+                                            <template x-if="!t.recurrence_kind && t.installment_total <= 1">
+                                                <span class="text-slate-300 text-xs">—</span>
+                                            </template>
+                                        </div>
+                                        <div class="px-3 py-2 text-right whitespace-nowrap font-medium"
+                                             :class="parseFloat(t.amount) < 0 ? 'text-emerald-700' : 'text-slate-900'">
+                                            <span x-text="formatAmount(t.amount)"></span>
+                                            <span class="text-xs text-slate-400 ml-1" x-text="t.currency"></span>
+                                        </div>
+                                        <div class="px-3 py-2 text-right space-x-2">
+                                            <button @click="startEdit(t)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                            <button x-show="t.installment_total === 1"
+                                                    @click="askSplit(t)"
+                                                    class="text-amber-600 hover:text-amber-800 text-xs font-medium">Split</button>
+                                            <button @click="askDelete(t)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </template>
+
+                            <!-- EDIT MODE -->
+                            <template x-if="editing?.id === t.id">
+                                <td colspan="8" class="p-0">
+                                    <div class="grid grid-cols-[110px_1fr_1fr_1fr_2fr_150px_120px_120px] items-center">
+                                        <div class="px-2 py-2">
+                                            <input type="date" x-model="editing.transaction_date"
+                                                   class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                        </div>
+                                        <div class="px-2 py-2">
+                                            <select @change="editing.merchant_id = parseInt($event.target.value)"
+                                                    class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                                <template x-for="m in merchants" :key="m.id">
+                                                    <option :value="m.id" :selected="m.id === editing.merchant_id" x-text="m.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                        <div class="px-2 py-2">
+                                            <select @change="editing.category_id = parseInt($event.target.value)"
+                                                    class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                                <template x-for="c in categories" :key="c.id">
+                                                    <option :value="c.id" :selected="c.id === editing.category_id" x-text="(c.icon ? c.icon + ' ' : '') + c.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                        <div class="px-2 py-2">
+                                            <select @change="editing.payment_method_id = parseInt($event.target.value)"
+                                                    class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                                <template x-for="pm in paymentMethods" :key="pm.id">
+                                                    <option :value="pm.id" :selected="pm.id === editing.payment_method_id" x-text="`${pm.name} (${pm.currency})`"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                        <div class="px-2 py-2">
+                                            <input type="text" x-model="editing.description"
+                                                   class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                        </div>
+                                        <div class="px-1 py-2 space-y-1">
+                                            <div class="flex items-center gap-1 justify-center">
+                                                <input type="number" min="1" x-model.number="editing.installment_current"
+                                                       title="Current installment"
+                                                       class="w-9 border border-slate-300 rounded px-1 py-1 text-xs text-center">
+                                                <span class="text-slate-400 text-xs">/</span>
+                                                <input type="number" min="1" x-model.number="editing.installment_total"
+                                                       title="Total installments"
+                                                       class="w-9 border border-slate-300 rounded px-1 py-1 text-xs text-center">
+                                            </div>
+                                            <select x-model="editing.recurrence_kind"
+                                                    title="Recurrence kind"
+                                                    class="w-full border border-slate-300 rounded px-1 py-0.5 text-[10px]">
+                                                <option value="">(none)</option>
+                                                <option value="INDEFINITE">Indefinite</option>
+                                                <option value="CONTRACT">Contract</option>
+                                                <option value="INSTALLMENT">Installment</option>
+                                                <option value="EXTRA_PRINCIPAL">Extra Principal</option>
+                                            </select>
+                                            <input type="date" x-model="editing.contract_end_date"
+                                                   x-show="editing.recurrence_kind === 'CONTRACT'"
+                                                   title="Contract end date"
+                                                   class="w-full border border-slate-300 rounded px-1 py-0.5 text-[10px]">
+                                        </div>
+                                        <div class="px-2 py-2">
+                                            <input type="number" step="0.01" x-model.number="editing.amount"
+                                                   class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right">
+                                        </div>
+                                        <div class="px-2 py-2 text-right space-x-2">
+                                            <button @click="saveEdit()" :disabled="saving"
+                                                    class="text-emerald-700 hover:text-emerald-900 text-xs font-medium disabled:opacity-50">
+                                                <span x-show="!saving">Save</span>
+                                                <span x-show="saving">…</span>
+                                            </button>
+                                            <button @click="cancelEdit()" class="text-slate-600 hover:text-slate-900 text-xs font-medium">Cancel</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </template>
+                        </tr>
+                    </template>
+                    <tr x-show="!loading && (result?.transactions || []).length === 0">
+                        <td colspan="8" class="px-3 py-8 text-center text-slate-500 text-sm">
+                            No transactions match these filters.
+                        </td>
+                    </tr>
+                    <tr x-show="remainingRows() > 0">
+                        <td colspan="8" class="px-3 py-4 text-center">
+                            <button @click="showMore()"
+                                    class="px-4 py-1.5 rounded-md border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                                    x-text="`Load more (${remainingRows()} remaining)`"></button>
+                            <div class="mt-1 text-xs text-slate-400">
+                                Showing <span x-text="visibleRows().length"></span>
+                                of <span x-text="(result?.transactions || []).length"></span> rows
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- CREATE MODAL -->
+    <div x-show="creating" x-cloak
+         class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-3">Add transaction</h3>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+                    <input type="date" x-model="newTxn.transaction_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">
+                        Amount
+                        <span class="ml-1 text-slate-400 font-normal" x-text="newTxnCurrency() ? '(' + newTxnCurrency() + ')' : ''"></span>
+                    </label>
+                    <input type="number" step="0.01" x-model.number="newTxn.amount"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm text-right">
+                    <p x-show="newTxn.installment_total > 1 && newTxn.amount > 0" class="mt-1 text-xs text-slate-500">
+                        Will split as <span class="font-medium"
+                            x-text="(parseFloat(newTxn.amount || 0) / newTxn.installment_total).toFixed(2)"></span>
+                        × <span x-text="newTxn.installment_total"></span> months
+                    </p>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
+                    <select @change="newTxn.merchant_id = parseInt($event.target.value)"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">Select…</option>
+                        <template x-for="m in merchants" :key="m.id">
+                            <option :value="m.id" :selected="m.id === newTxn.merchant_id" x-text="m.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
+                    <select @change="newTxn.category_id = parseInt($event.target.value)"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">Select…</option>
+                        <template x-for="c in categories" :key="c.id">
+                            <option :value="c.id" :selected="c.id === newTxn.category_id" x-text="c.name + ' (' + c.type + ')'"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Payment</label>
+                    <select @change="newTxn.payment_method_id = parseInt($event.target.value)"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">Select…</option>
+                        <template x-for="pm in paymentMethods" :key="pm.id">
+                            <option :value="pm.id" :selected="pm.id === newTxn.payment_method_id" x-text="pm.name + ' (' + pm.currency + ')'"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Description</label>
+                    <input type="text" x-model="newTxn.description"
+                           placeholder="e.g. cash / bank transfer / what was bought"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Owner</label>
+                    <select @change="newTxn.owner_user_id = parseInt($event.target.value) || null"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">(none)</option>
+                        <template x-for="u in users" :key="u.id">
+                            <option :value="u.id" :selected="u.id === newTxn.owner_user_id" x-text="u.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="flex items-end gap-1">
+                    <div class="flex-1">
+                        <label class="block text-xs font-medium text-slate-600 mb-1">Installment</label>
+                        <div class="flex items-center gap-1">
+                            <input type="number" min="1" x-model.number="newTxn.installment_current"
+                                   class="w-12 border border-slate-300 rounded px-1 py-1 text-xs text-center">
+                            <span class="text-slate-400 text-xs">/</span>
+                            <input type="number" min="1" x-model.number="newTxn.installment_total"
+                                   class="w-12 border border-slate-300 rounded px-1 py-1 text-xs text-center">
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+                    <select x-model="newTxn.recurrence_kind"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="">(none)</option>
+                        <option value="INDEFINITE">Indefinite</option>
+                        <option value="CONTRACT">Contract</option>
+                        <option value="INSTALLMENT">Installment</option>
+                        <option value="EXTRA_PRINCIPAL">Extra Principal (car loan)</option>
+                    </select>
+                </div>
+                <div x-show="newTxn.recurrence_kind === 'CONTRACT'">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Contract ends</label>
+                    <input type="date" x-model="newTxn.contract_end_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+            </div>
+            <p x-show="createError" class="mt-3 text-sm text-rose-600" x-text="createError"></p>
+            <div class="flex justify-end gap-2 mt-4">
+                <button @click="creating = false; createError = ''"
+                        class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doCreate()" :disabled="creatingBusy || !canCreate()"
+                        :class="canCreate() && !creatingBusy ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                        class="px-4 py-2 rounded text-sm text-white font-medium">
+                    <span x-show="!creatingBusy">Create</span>
+                    <span x-show="creatingBusy">Saving…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SPLIT MODAL -->
+    <div x-show="splitTarget" x-cloak
+         class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-2">Split into installments</h3>
+            <p class="text-sm text-slate-600 mb-4">
+                <span x-text="splitTarget?.transaction_date"></span> ·
+                <span class="font-medium" x-text="splitTarget?.merchant_name"></span> ·
+                <span x-text="formatAmount(splitTarget?.amount)"></span>
+                <span class="text-xs text-slate-400" x-text="splitTarget?.currency"></span>
+            </p>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Number of installments</label>
+            <input type="number" min="2" max="36" x-model.number="splitN"
+                   class="w-24 border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            <p class="mt-3 text-xs text-slate-500" x-show="splitN >= 2 && splitTarget">
+                Each installment ≈
+                <span class="font-medium" x-text="formatAmount((parseFloat(splitTarget?.amount || 0) / splitN).toFixed(2))"></span>.
+                <span x-show="splitN > 1">A new row will be created in each of the next
+                    <span x-text="splitN - 1"></span> months (same day, clamped to month-end).</span>
+            </p>
+            <p x-show="splitError" class="mt-2 text-sm text-rose-600" x-text="splitError"></p>
+            <div class="flex justify-end gap-2 mt-4">
+                <button @click="splitTarget = null; splitError = ''" class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doSplit()" :disabled="splitting || splitN < 2"
+                        class="px-4 py-2 rounded text-sm text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50">
+                    <span x-show="!splitting">Split</span>
+                    <span x-show="splitting">Splitting…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE CONFIRM MODAL -->
+    <div x-show="confirmDelete" x-cloak
+         class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-2">Delete transaction?</h3>
+            <p class="text-sm text-slate-600 mb-4">
+                <span x-text="confirmDelete?.transaction_date"></span> ·
+                <span class="font-medium" x-text="confirmDelete?.merchant_name"></span> ·
+                <span x-text="formatAmount(confirmDelete?.amount)"></span>
+                <span class="text-xs text-slate-400" x-text="confirmDelete?.currency"></span>
+            </p>
+            <p class="text-xs text-slate-500 mb-4">This cannot be undone.</p>
+            <div class="flex justify-end gap-2">
+                <button @click="confirmDelete = null" class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doDelete()" :disabled="deleting"
+                        class="px-4 py-2 rounded text-sm text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50">
+                    <span x-show="!deleting">Delete</span>
+                    <span x-show="deleting">Deleting…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Rows revealed per "Load more" click. The list is rendered incrementally
+// because the API has no pagination: a full year is ~700 rows and growing,
+// and rendering all of them costs a 28k-pixel page on every filter change.
+const ROW_PAGE = 100;
+
+function transactionsPage() {
+    const today = new Date();
+    return {
+        filters: {
+            year: '',
+            month: '',
+            category_id: '',
+            payment_method_id: '',
+            currency: '',
+            search: '',
+        },
+        years: [],
+        monthNames: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        categories: [],
+        merchants: [],
+        paymentMethods: [],
+        users: [],
+        result: null,
+        visibleCount: ROW_PAGE,
+        loading: false,
+        saving: false,
+        deleting: false,
+        editing: null,
+        confirmDelete: null,
+        splitTarget: null,
+        splitN: 2,
+        splitting: false,
+        splitError: '',
+        creating: false,
+        creatingBusy: false,
+        createError: '',
+        newTxn: {},
+        errorMessage: '',
+
+        async init() {
+            const y = today.getFullYear();
+            this.years = [y - 2, y - 1, y, y + 1];
+            await Promise.all([
+                this.loadCategories(),
+                this.loadMerchants(),
+                this.loadPaymentMethods(),
+                this.loadUsers(),
+            ]);
+            await this.reload();
+        },
+
+        async loadUsers() {
+            const res = await fetch('/api/users');
+            this.users = await res.json();
+        },
+
+        openCreate() {
+            this.newTxn = {
+                transaction_date: today.toISOString().slice(0, 10),
+                merchant_id: null,
+                category_id: null,
+                payment_method_id: null,
+                amount: null,
+                description: '',
+                owner_user_id: this.users[0]?.id ?? null,
+                installment_current: 1,
+                installment_total: 1,
+                recurrence_kind: '',
+                contract_end_date: '',
+            };
+            this.createError = '';
+            this.creating = true;
+        },
+
+        kindBadgeLabel(kind) {
+            return {
+                INDEFINITE: 'IND',
+                CONTRACT: 'CTR',
+                INSTALLMENT: 'INS',
+                EXTRA_PRINCIPAL: 'EXTRA',
+            }[kind] || kind;
+        },
+        kindBadgeClass(kind) {
+            return {
+                INDEFINITE: 'bg-slate-100 text-slate-700',
+                CONTRACT: 'bg-violet-100 text-violet-700',
+                INSTALLMENT: 'bg-sky-100 text-sky-700',
+                EXTRA_PRINCIPAL: 'bg-emerald-100 text-emerald-700',
+            }[kind] || 'bg-slate-100 text-slate-700';
+        },
+
+        canCreate() {
+            const t = this.newTxn;
+            return t.transaction_date && t.merchant_id && t.category_id
+                && t.payment_method_id && t.amount !== null && t.amount !== '';
+        },
+
+        newTxnCurrency() {
+            const pm = this.paymentMethods.find(x => x.id === this.newTxn?.payment_method_id);
+            return pm ? pm.currency : '';
+        },
+
+        async doCreate() {
+            if (!this.canCreate()) return;
+            this.creatingBusy = true;
+            this.createError = '';
+            try {
+                // Strip empty strings so the API gets nulls.
+                const payload = {...this.newTxn};
+                if (!payload.recurrence_kind) payload.recurrence_kind = null;
+                if (!payload.contract_end_date) payload.contract_end_date = null;
+                const res = await fetch('/api/transactions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.creating = false;
+                await this.reload(false);
+            } catch (e) {
+                this.createError = e.message;
+            } finally {
+                this.creatingBusy = false;
+            }
+        },
+
+        async loadCategories() {
+            const res = await fetch('/api/categories');
+            this.categories = await res.json();
+        },
+        async loadMerchants() {
+            const res = await fetch('/api/merchants?limit=1000');
+            this.merchants = await res.json();
+        },
+        async loadPaymentMethods() {
+            const res = await fetch('/api/payment-methods?active_only=false');
+            this.paymentMethods = await res.json();
+        },
+
+        buildQuery() {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(this.filters)) {
+                if (v !== '' && v !== null && v !== undefined) {
+                    params.set(k, v);
+                }
+            }
+            return params.toString();
+        },
+
+        async reload(resetWindow = true) {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch('/api/transactions?' + this.buildQuery());
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.result = await res.json();
+                if (resetWindow) this.visibleCount = ROW_PAGE;
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        // The API returns the whole filtered set (row count and totals in the
+        // header are computed over it); only the rendering is windowed.
+        visibleRows() {
+            return (this.result?.transactions || []).slice(0, this.visibleCount);
+        },
+
+        remainingRows() {
+            return Math.max(0, (this.result?.transactions || []).length - this.visibleCount);
+        },
+
+        showMore() {
+            this.visibleCount += ROW_PAGE;
+        },
+
+        resetFilters() {
+            this.filters = {
+                year: '', month: '', category_id: '', payment_method_id: '',
+                currency: '', search: '',
+            };
+            this.reload();
+        },
+
+        startEdit(t) {
+            this.editing = {
+                id: t.id,
+                transaction_date: t.transaction_date,
+                merchant_id: t.merchant_id,
+                category_id: t.category_id,
+                payment_method_id: t.payment_method_id,
+                amount: parseFloat(t.amount),
+                description: t.description || '',
+                installment_current: t.installment_current,
+                installment_total: t.installment_total,
+                recurrence_kind: t.recurrence_kind || '',
+                contract_end_date: t.contract_end_date || '',
+            };
+        },
+
+        cancelEdit() {
+            this.editing = null;
+        },
+
+        async saveEdit() {
+            if (!this.editing) return;
+            this.saving = true;
+            this.errorMessage = '';
+            try {
+                const patch = {
+                    transaction_date: this.editing.transaction_date,
+                    merchant_id: this.editing.merchant_id,
+                    category_id: this.editing.category_id,
+                    payment_method_id: this.editing.payment_method_id,
+                    amount: this.editing.amount,
+                    description: this.editing.description,
+                    installment_current: this.editing.installment_current,
+                    installment_total: this.editing.installment_total,
+                    recurrence_kind: this.editing.recurrence_kind || null,
+                };
+                if (this.editing.recurrence_kind === 'CONTRACT' && this.editing.contract_end_date) {
+                    patch.contract_end_date = this.editing.contract_end_date;
+                } else {
+                    patch.clear_contract_end_date = true;
+                }
+                const res = await fetch(`/api/transactions/${this.editing.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(patch),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.editing = null;
+                await this.reload(false);
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        askDelete(t) {
+            this.confirmDelete = t;
+        },
+
+        askSplit(t) {
+            this.splitTarget = t;
+            this.splitN = 2;
+            this.splitError = '';
+        },
+
+        async doSplit() {
+            if (!this.splitTarget || this.splitN < 2) return;
+            this.splitting = true;
+            this.splitError = '';
+            try {
+                const res = await fetch(`/api/transactions/${this.splitTarget.id}/split`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({installments: this.splitN}),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.splitTarget = null;
+                await this.reload(false);
+            } catch (e) {
+                this.splitError = e.message;
+            } finally {
+                this.splitting = false;
+            }
+        },
+
+        async doDelete() {
+            if (!this.confirmDelete) return;
+            this.deleting = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch(`/api/transactions/${this.confirmDelete.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.confirmDelete = null;
+                await this.reload(false);
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.deleting = false;
+            }
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === '') return '';
+            const n = parseFloat(amount);
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toFixed(2)}`;
+        },
+    }
+}
+</script>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}

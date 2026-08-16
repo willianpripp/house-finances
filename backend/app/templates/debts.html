@@ -1,0 +1,667 @@
+{% extends "base.html" %}
+
+{% block title %}Debts — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="debtsPage()" x-init="init()">
+
+    <!-- HEADER -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <h2 class="text-2xl font-semibold text-slate-900 mb-1">Debts</h2>
+        <p class="text-sm text-slate-600">Credit card balances (auto-updated by imports — manual adjustments allowed) and the car loan.</p>
+    </div>
+
+    <!-- CREDIT CARDS -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <h3 class="text-lg font-semibold text-slate-900">Credit Cards</h3>
+                <p class="text-xs text-slate-500">Current balance per card. Updates create a new history row.</p>
+            </div>
+            <div class="text-sm text-slate-700">
+                <template x-for="(s, c) in cardsCurrent?.sum_by_currency || {}" :key="c">
+                    <span class="ml-3">
+                        <span class="font-medium" x-text="c"></span>
+                        <span x-text="formatAmount(s)"></span>
+                    </span>
+                </template>
+            </div>
+        </div>
+
+        <div x-show="dormantCount() > 0" class="mb-3">
+            <button @click="showDormant = !showDormant"
+                    class="text-xs text-slate-500 hover:text-slate-700 underline">
+                <span x-show="!showDormant" x-text="`Show ${dormantCount()} dormant card(s) (zero, no movement 60d)`"></span>
+                <span x-show="showDormant">Hide dormant cards</span>
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+            <template x-for="b in visibleCards()" :key="b.id">
+                <div class="border rounded-md p-3 flex items-start justify-between transition-shadow hover:shadow-md"
+                     data-heatmap
+                     :style="debtHeatmapStyle(b)"
+                     :class="debtTextDark(b) ? 'border-slate-200' : 'border-rose-700/40'">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium truncate"
+                             :class="debtTextDark(b) ? 'text-slate-800' : 'text-white'"
+                             x-text="b.payment_method_name"></div>
+                        <div class="text-xs"
+                             :class="debtTextDark(b) ? 'text-slate-500' : 'text-rose-100'">
+                            <span x-show="b.due_day">due day <span x-text="b.due_day"></span> · </span>
+                            <span x-text="formatDate(b.recorded_at)"></span>
+                        </div>
+                    </div>
+                    <div class="text-right ml-3">
+                        <div class="flex items-center justify-end gap-1.5">
+                            <div class="text-base font-semibold"
+                                 :class="debtTextDark(b) ? (parseFloat(b.balance) > 0 ? 'text-rose-700' : 'text-slate-700') : 'text-white'"
+                                 x-text="formatAmount(b.balance)"></div>
+                            <span x-show="b.mom_pct !== null && b.mom_pct !== undefined"
+                                  class="text-[11px] font-medium px-1.5 py-0.5 rounded"
+                                  :class="momBadgeClass(b.mom_pct, debtTextDark(b))"
+                                  x-text="formatMom(b.mom_pct)"
+                                  :title="b.prev_balance !== null ? `Last month: ${formatAmount(b.prev_balance)}` : ''"></span>
+                        </div>
+                        <div class="text-xs"
+                             :class="debtTextDark(b) ? 'text-slate-400' : 'text-rose-100'"
+                             x-text="b.currency"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- BALANCE UPDATE HINT (manual form retired 2026-05-22) -->
+        <div class="mt-4 pt-4 border-t border-slate-200">
+            <p class="text-xs text-slate-500">
+                Card balances refresh automatically from
+                <a href="/imports" class="text-blue-600 hover:text-blue-800">checking imports</a>
+                — paste mid-month activity for an instant update, or wait for the statement PDF.
+                Need a one-off override? Edit the latest row in the history below.
+            </p>
+        </div>
+
+        <!-- HISTORY TOGGLE -->
+        <div class="mt-4 pt-4 border-t border-slate-200">
+            <button @click="historyOpen = !historyOpen; if (historyOpen) reloadCardHistory()"
+                    class="text-sm text-blue-600 hover:text-blue-800 font-medium">
+                <span x-show="!historyOpen">Show history</span>
+                <span x-show="historyOpen">Hide history</span>
+            </button>
+            <div x-show="historyOpen" class="mt-3">
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">Card</label>
+                        <select x-model.number="cardFilters.payment_method_id" @change="reloadCardHistory()"
+                                class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                            <option value="">All cards</option>
+                            <template x-for="pm in cardPaymentMethods" :key="pm.id">
+                                <option :value="pm.id" x-text="pm.name"></option>
+                            </template>
+                        </select>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-700 text-left text-xs">
+                                <th colspan="6" class="p-0">
+                                    <div class="grid grid-cols-[140px_1fr_140px_80px_120px]">
+                                        <div class="px-3 py-2 font-medium">Recorded</div>
+                                        <div class="px-3 py-2 font-medium">Card</div>
+                                        <div class="px-3 py-2 font-medium text-right">Balance</div>
+                                        <div class="px-3 py-2 font-medium">Due day</div>
+                                        <div class="px-3 py-2 font-medium text-right"></div>
+                                    </div>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="b in cardHistory?.balances || []" :key="b.id">
+                                <tr class="border-b border-slate-100"
+                                    :class="editingCard?.id === b.id ? 'bg-blue-50' : ''">
+                                    <template x-if="editingCard?.id !== b.id">
+                                        <td colspan="6" class="p-0">
+                                            <div class="grid grid-cols-[140px_1fr_140px_80px_120px] items-center">
+                                                <div class="px-3 py-2 text-xs text-slate-500" x-text="formatDate(b.recorded_at)"></div>
+                                                <div class="px-3 py-2 text-slate-800" x-text="b.payment_method_name"></div>
+                                                <div class="px-3 py-2 text-right font-medium"
+                                                     :class="parseFloat(b.balance) > 0 ? 'text-rose-700' : 'text-slate-700'"
+                                                     x-text="formatAmount(b.balance) + ' ' + b.currency"></div>
+                                                <div class="px-3 py-2 text-xs text-slate-500" x-text="b.due_day || '—'"></div>
+                                                <div class="px-3 py-2 text-right space-x-2">
+                                                    <button @click="startEditCard(b)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                                    <button @click="askDeleteCard(b)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </template>
+                                    <template x-if="editingCard?.id === b.id">
+                                        <td colspan="6" class="p-0">
+                                            <div class="grid grid-cols-[140px_1fr_140px_80px_120px] items-center">
+                                                <div class="px-2 py-2">
+                                                    <input type="date" x-model="editingCard.recorded_date"
+                                                           class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                                </div>
+                                                <div class="px-2 py-2 text-slate-800" x-text="b.payment_method_name"></div>
+                                                <div class="px-2 py-2">
+                                                    <input type="number" step="0.01" x-model.number="editingCard.balance"
+                                                           class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right">
+                                                </div>
+                                                <div class="px-2 py-2">
+                                                    <input type="number" min="1" max="31" x-model.number="editingCard.due_day"
+                                                           class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs">
+                                                </div>
+                                                <div class="px-2 py-2 text-right space-x-2">
+                                                    <button @click="saveEditCard()" :disabled="savingCard"
+                                                            class="text-emerald-700 hover:text-emerald-900 text-xs font-medium disabled:opacity-50">
+                                                        <span x-show="!savingCard">Save</span>
+                                                        <span x-show="savingCard">…</span>
+                                                    </button>
+                                                    <button @click="editingCard = null" class="text-slate-600 hover:text-slate-900 text-xs font-medium">Cancel</button>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </template>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CAR LOAN -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <h3 class="text-lg font-semibold text-slate-900">Car Loan</h3>
+                <p class="text-xs text-slate-500">Car financing — running balance after each payment.</p>
+            </div>
+        </div>
+
+        <!-- summary -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <div class="bg-rose-50 border border-rose-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-rose-700">Remaining balance</div>
+                <div class="text-2xl font-semibold text-rose-900" x-text="formatAmount(carLoan?.summary?.latest_balance) || '—'"></div>
+                <div class="text-xs text-rose-600" x-text="carLoan?.summary?.latest_payment_date ? `as of ${carLoan.summary.latest_payment_date}` : ''"></div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-slate-600">Payments</div>
+                <div class="text-2xl font-semibold text-slate-900" x-text="carLoan?.summary?.total_payments ?? 0"></div>
+            </div>
+            <div class="bg-emerald-50 border border-emerald-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-emerald-700">Principal paid</div>
+                <div class="text-2xl font-semibold text-emerald-900" x-text="formatAmount(carLoan?.summary?.total_principal_paid)"></div>
+            </div>
+            <div class="bg-amber-50 border border-amber-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-amber-700">Interest paid</div>
+                <div class="text-2xl font-semibold text-amber-900" x-text="formatAmount(carLoan?.summary?.total_interest_paid)"></div>
+            </div>
+        </div>
+
+        <!-- add car payment -->
+        <div class="mb-4">
+            <h4 class="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Record payment</h4>
+            <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+                    <input type="date" x-model="newCar.posting_date"
+                           class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Payment</label>
+                    <input type="number" step="0.01" x-model.number="newCar.payment_amount"
+                           class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm text-right">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Principal</label>
+                    <input type="number" step="0.01" x-model.number="newCar.principal_paid"
+                           class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm text-right">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Interest</label>
+                    <input type="number" step="0.01" x-model.number="newCar.interest_paid"
+                           class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm text-right">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">New balance</label>
+                    <input type="number" step="0.01" x-model.number="newCar.new_balance"
+                           class="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm text-right">
+                </div>
+                <div>
+                    <button @click="createCarPayment()"
+                            :disabled="creatingCar || !canCreateCar()"
+                            :class="canCreateCar() && !creatingCar ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                            class="w-full px-4 py-2 rounded-md text-white text-sm font-medium">
+                        <span x-show="!creatingCar">Add</span>
+                        <span x-show="creatingCar">Saving…</span>
+                    </button>
+                </div>
+            </div>
+            <p x-show="createCarError" class="mt-2 text-sm text-rose-600" x-text="createCarError"></p>
+        </div>
+
+        <!-- payments table -->
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-slate-100 text-slate-700 text-left text-xs">
+                        <th colspan="6" class="p-0">
+                            <div class="grid grid-cols-[110px_120px_120px_120px_140px_140px]">
+                                <div class="px-3 py-2 font-medium">Date</div>
+                                <div class="px-3 py-2 font-medium text-right">Payment</div>
+                                <div class="px-3 py-2 font-medium text-right">Principal</div>
+                                <div class="px-3 py-2 font-medium text-right">Interest</div>
+                                <div class="px-3 py-2 font-medium text-right">New balance</div>
+                                <div class="px-3 py-2 font-medium text-right"></div>
+                            </div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="p in carLoan?.payments || []" :key="p.id">
+                        <tr class="border-b border-slate-100"
+                            :class="editingCar?.id === p.id ? 'bg-blue-50' : ''">
+                            <template x-if="editingCar?.id !== p.id">
+                                <td colspan="6" class="p-0">
+                                    <div class="grid grid-cols-[110px_120px_120px_120px_140px_140px] items-center">
+                                        <div class="px-3 py-2 text-slate-700" x-text="p.posting_date"></div>
+                                        <div class="px-3 py-2 text-right font-medium" x-text="formatAmount(p.payment_amount)"></div>
+                                        <div class="px-3 py-2 text-right text-emerald-700" x-text="formatAmount(p.principal_paid)"></div>
+                                        <div class="px-3 py-2 text-right text-amber-700" x-text="formatAmount(p.interest_paid)"></div>
+                                        <div class="px-3 py-2 text-right text-rose-700 font-medium" x-text="formatAmount(p.new_balance)"></div>
+                                        <div class="px-3 py-2 text-right space-x-2">
+                                            <button @click="startEditCar(p)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                            <button @click="askDeleteCar(p)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </template>
+                            <template x-if="editingCar?.id === p.id">
+                                <td colspan="6" class="p-0">
+                                    <div class="grid grid-cols-[110px_120px_120px_120px_140px_140px] items-center">
+                                        <div class="px-2 py-2"><input type="date" x-model="editingCar.posting_date"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs"></div>
+                                        <div class="px-2 py-2"><input type="number" step="0.01" x-model.number="editingCar.payment_amount"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right"></div>
+                                        <div class="px-2 py-2"><input type="number" step="0.01" x-model.number="editingCar.principal_paid"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right"></div>
+                                        <div class="px-2 py-2"><input type="number" step="0.01" x-model.number="editingCar.interest_paid"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right"></div>
+                                        <div class="px-2 py-2"><input type="number" step="0.01" x-model.number="editingCar.new_balance"
+                                                class="w-full border border-slate-300 rounded px-1.5 py-1 text-xs text-right"></div>
+                                        <div class="px-2 py-2 text-right space-x-2">
+                                            <button @click="saveEditCar()" :disabled="savingCar"
+                                                    class="text-emerald-700 hover:text-emerald-900 text-xs font-medium disabled:opacity-50">
+                                                <span x-show="!savingCar">Save</span>
+                                                <span x-show="savingCar">…</span>
+                                            </button>
+                                            <button @click="editingCar = null" class="text-slate-600 hover:text-slate-900 text-xs font-medium">Cancel</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </template>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- DELETE MODAL -->
+    <div x-show="confirmDelete" x-cloak class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold text-slate-900 mb-2" x-text="confirmDelete?.title"></h3>
+            <p class="text-sm text-slate-600 mb-4" x-text="confirmDelete?.detail"></p>
+            <p class="text-xs text-slate-500 mb-4">This cannot be undone.</p>
+            <div class="flex justify-end gap-2">
+                <button @click="confirmDelete = null" class="px-4 py-2 rounded text-sm text-slate-700 hover:bg-slate-100">Cancel</button>
+                <button @click="doDelete()" :disabled="deleting"
+                        class="px-4 py-2 rounded text-sm text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50">
+                    <span x-show="!deleting">Delete</span>
+                    <span x-show="deleting">Deleting…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function debtsPage() {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+        cardPaymentMethods: [],
+        cardsCurrent: null,
+        cardHistory: null,
+        carLoan: null,
+        cardFilters: {payment_method_id: ''},
+        historyOpen: false,
+        showDormant: false,  // ENH-4: hide zero, no-movement-60d cards by default
+        editingCard: null,
+        editingCar: null,
+        creatingCard: false,
+        creatingCar: false,
+        savingCard: false,
+        savingCar: false,
+        deleting: false,
+        confirmDelete: null,
+        createCardError: '',
+        createCarError: '',
+        errorMessage: '',
+        newCard: {
+            payment_method_id: '',
+            balance: null,
+            statement: null,
+            due_day: null,
+        },
+        newCar: {
+            posting_date: today,
+            payment_amount: null,
+            principal_paid: null,
+            interest_paid: null,
+            new_balance: null,
+        },
+
+        async init() {
+            await Promise.all([
+                this.loadCardPaymentMethods(),
+                this.reloadCardsCurrent(),
+                this.reloadCarLoan(),
+            ]);
+        },
+
+        async loadCardPaymentMethods() {
+            const res = await fetch('/api/payment-methods?active_only=false');
+            const all = await res.json();
+            this.cardPaymentMethods = all.filter(pm => pm.type === 'credit_card');
+        },
+
+        async reloadCardsCurrent() {
+            const res = await fetch('/api/debts/cards/current');
+            this.cardsCurrent = await res.json();
+        },
+
+        async reloadCardHistory() {
+            const params = new URLSearchParams();
+            if (this.cardFilters.payment_method_id) params.set('payment_method_id', this.cardFilters.payment_method_id);
+            const res = await fetch('/api/debts/cards/balances?' + params.toString());
+            this.cardHistory = await res.json();
+        },
+
+        async reloadCarLoan() {
+            const res = await fetch('/api/debts/car-loan');
+            this.carLoan = await res.json();
+        },
+
+        async createCardBalance() {
+            this.creatingCard = true;
+            this.createCardError = '';
+            try {
+                const body = {
+                    payment_method_id: this.newCard.payment_method_id,
+                    balance: this.newCard.balance,
+                };
+                if (this.newCard.statement !== null && this.newCard.statement !== '') body.statement = this.newCard.statement;
+                if (this.newCard.due_day !== null && this.newCard.due_day !== '') body.due_day = this.newCard.due_day;
+                const res = await fetch('/api/debts/cards/balances', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.newCard.balance = null;
+                this.newCard.statement = null;
+                await Promise.all([this.reloadCardsCurrent(), this.historyOpen ? this.reloadCardHistory() : Promise.resolve()]);
+            } catch (e) {
+                this.createCardError = e.message;
+            } finally {
+                this.creatingCard = false;
+            }
+        },
+
+        startEditCard(b) {
+            this.editingCard = {
+                id: b.id,
+                balance: parseFloat(b.balance),
+                statement: b.statement !== null ? parseFloat(b.statement) : null,
+                due_day: b.due_day,
+                recorded_date: (b.recorded_at || '').slice(0, 10),
+            };
+        },
+
+        async saveEditCard() {
+            if (!this.editingCard) return;
+            this.savingCard = true;
+            try {
+                const body = {
+                    balance: this.editingCard.balance,
+                    statement: this.editingCard.statement,
+                    due_day: this.editingCard.due_day,
+                };
+                if (this.editingCard.recorded_date) {
+                    body.recorded_at = this.editingCard.recorded_date + 'T12:00:00';
+                }
+                const res = await fetch(`/api/debts/cards/balances/${this.editingCard.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.editingCard = null;
+                await Promise.all([this.reloadCardsCurrent(), this.reloadCardHistory()]);
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.savingCard = false;
+            }
+        },
+
+        askDeleteCard(b) {
+            this.confirmDelete = {
+                kind: 'card',
+                id: b.id,
+                title: 'Delete card balance row?',
+                detail: `${b.payment_method_name} — ${this.formatAmount(b.balance)} ${b.currency} (${this.formatDate(b.recorded_at)})`,
+            };
+        },
+
+        canCreateCar() {
+            const n = this.newCar;
+            return n.posting_date && n.payment_amount !== null && n.payment_amount !== ''
+                && n.new_balance !== null && n.new_balance !== '';
+        },
+
+        async createCarPayment() {
+            this.creatingCar = true;
+            this.createCarError = '';
+            try {
+                const body = {
+                    posting_date: this.newCar.posting_date,
+                    payment_amount: this.newCar.payment_amount,
+                    principal_paid: this.newCar.principal_paid ?? 0,
+                    interest_paid: this.newCar.interest_paid ?? 0,
+                    new_balance: this.newCar.new_balance,
+                };
+                const res = await fetch('/api/debts/car-loan/payments', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.newCar.payment_amount = null;
+                this.newCar.principal_paid = null;
+                this.newCar.interest_paid = null;
+                this.newCar.new_balance = null;
+                await this.reloadCarLoan();
+            } catch (e) {
+                this.createCarError = e.message;
+            } finally {
+                this.creatingCar = false;
+            }
+        },
+
+        startEditCar(p) {
+            this.editingCar = {
+                id: p.id,
+                posting_date: p.posting_date,
+                payment_amount: parseFloat(p.payment_amount),
+                principal_paid: parseFloat(p.principal_paid),
+                interest_paid: parseFloat(p.interest_paid),
+                new_balance: parseFloat(p.new_balance),
+            };
+        },
+
+        async saveEditCar() {
+            if (!this.editingCar) return;
+            this.savingCar = true;
+            try {
+                const res = await fetch(`/api/debts/car-loan/payments/${this.editingCar.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        posting_date: this.editingCar.posting_date,
+                        payment_amount: this.editingCar.payment_amount,
+                        principal_paid: this.editingCar.principal_paid,
+                        interest_paid: this.editingCar.interest_paid,
+                        new_balance: this.editingCar.new_balance,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.editingCar = null;
+                await this.reloadCarLoan();
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.savingCar = false;
+            }
+        },
+
+        askDeleteCar(p) {
+            this.confirmDelete = {
+                kind: 'car',
+                id: p.id,
+                title: 'Delete car loan payment?',
+                detail: `${p.posting_date} — payment ${this.formatAmount(p.payment_amount)}, balance after: ${this.formatAmount(p.new_balance)}`,
+            };
+        },
+
+        async doDelete() {
+            if (!this.confirmDelete) return;
+            this.deleting = true;
+            try {
+                const url = this.confirmDelete.kind === 'card'
+                    ? `/api/debts/cards/balances/${this.confirmDelete.id}`
+                    : `/api/debts/car-loan/payments/${this.confirmDelete.id}`;
+                const res = await fetch(url, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                const kind = this.confirmDelete.kind;
+                this.confirmDelete = null;
+                if (kind === 'card') {
+                    await Promise.all([this.reloadCardsCurrent(), this.reloadCardHistory()]);
+                } else {
+                    await this.reloadCarLoan();
+                }
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.deleting = false;
+            }
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === '') return '';
+            const n = parseFloat(amount);
+            if (Number.isNaN(n)) return '';
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        // ENH-4: a card is "dormant" when zero AND its last balance row is >60d old.
+        // Any new charge/balance records a fresh row → it reappears automatically.
+        dormant(b) {
+            if (parseFloat(b.balance) !== 0) return false;
+            if (!b.recorded_at) return true;
+            const ageDays = (Date.now() - new Date(b.recorded_at).getTime()) / 86400000;
+            return ageDays > 60;
+        },
+        dormantCount() {
+            return (this.cardsCurrent?.balances || []).filter(b => this.dormant(b)).length;
+        },
+        visibleCards() {
+            const all = this.cardsCurrent?.balances || [];
+            return this.showDormant ? all : all.filter(b => !this.dormant(b));
+        },
+        formatDate(iso) {
+            if (!iso) return '';
+            return iso.slice(0, 10);
+        },
+
+        // Phase 14 — heatmap + MoM helpers (debts variant: more debt = darker
+        // rose). Floor at $50 USD-eq so paid-down cards stay near-white even
+        // if they're the "min" of the day.
+        debtHeatmapPosition(b) {
+            const bounds = this.cardsCurrent?.heatmap_bounds;
+            if (!bounds) return null;
+            const usd = parseFloat(b.usd_equivalent);
+            if (Number.isNaN(usd)) return null;
+            if (usd < 50) return 0;
+            const min = parseFloat(bounds.min_usd);
+            const max = parseFloat(bounds.max_usd);
+            if (max <= min) return 1;
+            return Math.max(0, Math.min(1, (usd - min) / (max - min)));
+        },
+        debtHeatmapStyle(b) {
+            const pos = this.debtHeatmapPosition(b);
+            if (pos === null || pos === 0) return 'background: #f8fafc;';
+            // slate-50 (248,250,252) → rose-700 (190,18,60).
+            const r = Math.round(248 + (190 - 248) * pos);
+            const g = Math.round(250 + (18 - 250) * pos);
+            const bl = Math.round(252 + (60 - 252) * pos);
+            return `background: rgb(${r}, ${g}, ${bl});`;
+        },
+        debtTextDark(b) {
+            const pos = this.debtHeatmapPosition(b);
+            return pos === null || pos < 0.55;
+        },
+        // For debts, MoM semantics invert: positive % = debt grew = bad (red);
+        // negative % = debt shrank = good (green).
+        formatMom(pct) {
+            if (pct === null || pct === undefined) return '—';
+            const n = parseFloat(pct);
+            if (Number.isNaN(n)) return '—';
+            const arrow = n > 0.05 ? '▲' : n < -0.05 ? '▼' : '—';
+            return `${arrow} ${Math.abs(n).toFixed(1)}%`;
+        },
+        momBadgeClass(pct, lightBg) {
+            const n = parseFloat(pct);
+            if (Number.isNaN(n)) return lightBg ? 'bg-slate-200 text-slate-600' : 'bg-white/30 text-white';
+            // Inverted: up = rose, down = emerald.
+            if (n > 0.05) return lightBg ? 'bg-rose-100 text-rose-800' : 'bg-rose-300/30 text-rose-50';
+            if (n < -0.05) return lightBg ? 'bg-emerald-100 text-emerald-800' : 'bg-emerald-300/30 text-emerald-50';
+            return lightBg ? 'bg-slate-200 text-slate-600' : 'bg-white/30 text-white';
+        },
+    }
+}
+</script>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}
