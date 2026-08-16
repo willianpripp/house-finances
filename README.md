@@ -463,9 +463,10 @@ and drops the schema at the end.
 ## How this was built
 
 I built this with AI assistance and would rather say so plainly than leave
-anyone to guess. The earliest versions were written with Google's Gemini
-models; the rewrite this repository documents, and everything since, was built
-with [Claude Code](https://claude.com/claude-code) using several of Anthropic's
+anyone to guess. The earliest versions were written with Google's
+[Gemini](https://gemini.google.com) models; the rewrite this repository
+documents, and everything since, was built with
+[Claude Code](https://claude.com/claude-code) using several of Anthropic's
 models. Most of the code here was written by a model. The parts that make it
 worth running were not.
 
