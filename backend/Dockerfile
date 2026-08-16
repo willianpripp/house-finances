@@ -1,7 +1,7 @@
 # python:3.13-slim-bookworm, NOT alpine. Alpine is musl, and pandas and psycopg
 # have no musl wheels, so an alpine build compiles them from source: a slow build
 # and a fragile image for no benefit.
-FROM python:3.13-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # psycopg[binary] bundles libpq, so no postgresql-client is needed at runtime.
 # pdfplumber needs nothing beyond what pillow's wheel already carries.
