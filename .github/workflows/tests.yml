@@ -1,0 +1,75 @@
+name: tests
+
+# The suite runs against a real Postgres, not a stub: the app leans on Postgres
+# behaviour that SQLite does not have (partial unique indexes, enum types,
+# schema-scoped search_path), so a test run on anything else would be proving
+# the wrong thing.
+#
+# postgres:17 plain, deliberately. That is exactly what `make demo` gives a
+# stranger who clones this repo, so CI runs what a reader would run. Production
+# uses a custom image with an en_US collation; if a test ever depends on that,
+# it should fail here and be fixed rather than be hidden by matching CI to a
+# private deployment.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:17
+        env:
+          POSTGRES_USER: finances
+          POSTGRES_PASSWORD: finances
+          POSTGRES_DB: finances_test
+        ports:
+          - 5432:5432
+        # Without a healthcheck the job races initdb and fails on connection
+        # refused, intermittently, which is worse than failing outright.
+        options: >-
+          --health-cmd "pg_isready -U finances"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+          pip install --quiet -r backend/requirements-dev.txt
+
+      # A missing import raises NameError only when its line executes, so it
+      # survives every import-time check. Catching that is worth eight seconds.
+      - name: Lint for undefined names
+        run: ruff check --select F backend/app
+
+      - name: Run the suite
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://finances:finances@localhost:5432/finances_test
+          # Real crypto, throwaway key: the tests encrypt and decrypt, they just
+          # never touch a real provider token.
+          FERNET_KEY: ${{ secrets.CI_FERNET_KEY }}
+        run: |
+          if [ -z "$FERNET_KEY" ]; then
+            export FERNET_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          fi
+          python -m pytest tests/ -q -p no:cacheprovider
