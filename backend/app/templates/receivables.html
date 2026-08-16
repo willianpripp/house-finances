@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}Receivables — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="receivablesPage()" x-init="init()">
+
+    <div class="flex items-start justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold text-slate-900">Receivables</h2>
+            <p class="text-sm text-slate-600">Informal debts with family and friends, both ways. Charges on your cards that others pay you back, and shares you owe when someone else paid.</p>
+        </div>
+        <div class="flex gap-6 text-right">
+            <div>
+                <div class="text-xs text-slate-500">Owed to you</div>
+                <template x-for="t in totalsByCurrency()" :key="'o' + t.currency">
+                    <div class="text-2xl font-semibold text-emerald-700" x-text="formatAmount(t.owed, t.currency)"></div>
+                </template>
+            </div>
+            <div>
+                <div class="text-xs text-slate-500">You owe</div>
+                <template x-for="t in totalsByCurrency()" :key="'m' + t.currency">
+                    <div class="text-2xl font-semibold text-rose-700" x-text="formatAmount(t.mine, t.currency)"></div>
+                </template>
+            </div>
+            <div class="pl-6 border-l border-slate-200">
+                <div class="text-xs text-slate-500">Net</div>
+                <template x-for="t in totalsByCurrency()" :key="'n' + t.currency">
+                    <div class="text-2xl font-semibold" :class="t.net >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                         x-text="formatAmount(t.net, t.currency)"></div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- SUMMARY BY PERSON -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" x-show="summary.length">
+        <template x-for="s in summary" :key="s.person_id + '-' + s.currency">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-sm font-medium text-slate-900" x-text="s.person_name"></div>
+                <div class="text-xl font-semibold mt-1"
+                     :class="parseFloat(s.net_amount) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                     x-text="formatAmount(s.net_amount, s.currency)"></div>
+                <div class="text-xs" :class="parseFloat(s.net_amount) >= 0 ? 'text-emerald-600' : 'text-rose-600'"
+                     x-text="parseFloat(s.net_amount) >= 0 ? 'owes you' : 'you owe'"></div>
+                <div class="text-xs text-slate-400 mt-1"
+                     x-show="parseFloat(s.owed_to_me) > 0 && parseFloat(s.i_owe) > 0"
+                     x-text="`${formatAmount(s.owed_to_me, s.currency)} in / ${formatAmount(s.i_owe, s.currency)} out`"></div>
+                <div class="text-xs text-slate-400" x-text="s.open_count + ' item(s)'"></div>
+            </div>
+        </template>
+    </div>
+
+    <!-- NEW CHARGE (with split) -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-slate-900">New charge</h3>
+            <div class="flex items-center gap-3">
+            <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+                <button type="button" @click="form.currency = 'USD'"
+                        :class="form.currency === 'USD' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                        class="px-3 py-1.5">$ USD</button>
+                <button type="button" @click="form.currency = 'BRL'"
+                        :class="form.currency === 'BRL' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                        class="px-3 py-1.5 border-l border-slate-300">R$ BRL</button>
+            </div>
+            <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+                <button type="button" @click="form.direction = 'OWED_TO_ME'"
+                        :class="iOwe() ? 'bg-white text-slate-600 hover:bg-slate-50' : 'bg-emerald-600 text-white'"
+                        class="px-3 py-1.5">They owe me</button>
+                <button type="button" @click="form.direction = 'I_OWE'"
+                        :class="iOwe() ? 'bg-rose-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                        class="px-3 py-1.5 border-l border-slate-300">I owe them</button>
+            </div>
+            </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Description</label>
+                <input type="text" x-model="form.description" placeholder="Dinner, groceries…"
+                       class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Store</label>
+                <input type="text" x-model="form.store" placeholder="Restaurant, shop…"
+                       class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+            </div>
+            <div x-show="!iOwe()">
+                <label class="block text-xs font-medium text-slate-600 mb-1">Card / payment method</label>
+                <select x-model.number="form.payment_method_id" class="w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white">
+                    <option :value="null">—</option>
+                    <template x-for="c in cards" :key="c.id">
+                        <option :value="c.id" x-text="c.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+                <input type="date" x-model="form.charge_date" class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+            </div>
+        </div>
+
+        <!-- SPLIT HELPER -->
+        <div class="bg-slate-50 rounded-lg border border-slate-200 p-4">
+            <div class="flex flex-wrap items-end gap-4 mb-3" x-show="!iOwe()">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Total bill amount</label>
+                    <input type="number" step="0.01" min="0" x-model.number="form.total"
+                           class="w-32 border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <label class="flex items-center gap-1.5 text-sm text-slate-700">
+                    <input type="checkbox" x-model="form.includeMe" class="cursor-pointer">
+                    Include my share in the split
+                </label>
+                <button @click="splitEqual()" type="button"
+                        class="text-xs bg-slate-700 text-white rounded px-3 py-1.5 hover:bg-slate-800">
+                    Split equally
+                </button>
+                <span class="text-xs text-slate-500" x-show="participantCount() > 0"
+                      x-text="`÷ ${participantCount()} = ${formatAmount(perHead(), form.currency)} each`"></span>
+            </div>
+
+            <p class="text-xs text-slate-500 mb-2" x-show="!iOwe()">Check who took part and adjust each amount if needed. Only the checked people become receivables (your own share stays out).</p>
+            <p class="text-xs text-slate-500 mb-2" x-show="iOwe()">Check who paid for you and enter what you owe each of them. Nothing hits your ledger here, log the real expense on /transactions when you pay them back.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                <template x-for="p in people" :key="p.id">
+                    <div class="flex items-center gap-2 border rounded px-2 py-1.5"
+                         :class="!sel[p.id] ? 'border-slate-200' : (iOwe() ? 'border-rose-400 bg-rose-50' : 'border-emerald-400 bg-emerald-50')">
+                        <input type="checkbox" :checked="!!sel[p.id]" @change="toggle(p.id)" class="cursor-pointer">
+                        <span class="text-sm text-slate-800 flex-1" x-text="p.name"></span>
+                        <input type="number" step="0.01" min="0" x-model.number="parts[p.id]" x-show="sel[p.id]"
+                               class="w-20 border border-slate-300 rounded px-1 py-0.5 text-xs text-right">
+                    </div>
+                </template>
+            </div>
+
+            <div class="flex items-center gap-3 mt-4">
+                <button @click="submit()" type="button" :disabled="!canSubmit()"
+                        :class="iOwe() ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'"
+                        class="text-white rounded px-4 py-2 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                        x-text="iOwe() ? 'Add debt' : 'Add receivable'">
+                </button>
+                <span class="text-sm text-slate-600" x-show="selectedTotal() > 0"
+                      x-text="`${iOwe() ? 'You owe' : 'Owed'}: ${formatAmount(selectedTotal(), form.currency)}`"></span>
+                <span class="text-sm text-red-600" x-text="error"></span>
+            </div>
+        </div>
+
+        <!-- add person -->
+        <div class="flex items-center gap-2 mt-4 pt-4 border-t border-slate-100">
+            <span class="text-xs text-slate-500">Missing someone?</span>
+            <input type="text" x-model="newPerson.name" placeholder="Name"
+                   class="border border-slate-300 rounded px-2 py-1 text-xs w-40">
+            <button @click="addPerson()" type="button"
+                    class="text-xs border border-slate-300 rounded px-3 py-1 hover:bg-slate-50">+ Add person</button>
+        </div>
+    </div>
+
+    <!-- LIST -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-slate-900">Charges</h3>
+            <div class="flex items-center gap-4">
+                <div class="inline-flex rounded border border-slate-300 overflow-hidden text-xs">
+                    <template x-for="f in [{v:'', l:'All'}, {v:'OWED_TO_ME', l:'They owe me'}, {v:'I_OWE', l:'I owe'}]" :key="f.v">
+                        <button type="button" @click="filterDirection = f.v; loadRows()"
+                                :class="filterDirection === f.v ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                                class="px-3 py-1 border-l border-slate-300 first:border-l-0" x-text="f.l"></button>
+                    </template>
+                </div>
+                <label class="flex items-center gap-1.5 text-xs text-slate-600">
+                    <input type="checkbox" x-model="showSettled" @change="loadRows()" class="cursor-pointer">
+                    Show paid
+                </label>
+            </div>
+        </div>
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th class="py-2">Person</th>
+                    <th class="py-2">Direction</th>
+                    <th class="py-2">Description</th>
+                    <th class="py-2">Store</th>
+                    <th class="py-2">Card</th>
+                    <th class="py-2">Date</th>
+                    <th class="py-2 text-right">Amount</th>
+                    <th class="py-2 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="r in rows" :key="r.id">
+                    <tr class="border-b border-slate-100" :class="r.settled ? 'opacity-50' : ''">
+                        <td class="py-2 font-medium text-slate-800" x-text="r.person_name"></td>
+                        <td class="py-2">
+                            <span class="text-xs rounded px-1.5 py-0.5 whitespace-nowrap"
+                                  :class="r.direction === 'I_OWE' ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'"
+                                  x-text="r.direction === 'I_OWE' ? 'I owe' : 'owes me'"></span>
+                        </td>
+                        <td class="py-2 text-slate-700">
+                            <span x-text="r.description"></span>
+                            <span x-show="r.group_id" class="ml-1 text-xs text-slate-400" title="part of a split bill">⊟ split</span>
+                        </td>
+                        <td class="py-2 text-slate-500" x-text="r.store || '—'"></td>
+                        <td class="py-2 text-slate-500" x-text="r.payment_method_name || '—'"></td>
+                        <td class="py-2 text-slate-500" x-text="r.charge_date"></td>
+                        <td class="py-2 text-right font-medium"
+                            :class="r.direction === 'I_OWE' ? 'text-rose-700' : 'text-slate-800'"
+                            x-text="formatAmount(r.amount, r.currency)"></td>
+                        <td class="py-2 text-right whitespace-nowrap">
+                            <button x-show="!r.settled" @click="settle(r.id)" class="text-xs text-emerald-700 hover:underline">mark paid</button>
+                            <button x-show="r.settled" @click="unsettle(r.id)" class="text-xs text-slate-500 hover:underline">reopen</button>
+                            <button @click="del(r.id)" class="text-xs text-red-600 hover:underline ml-2">delete</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="rows.length === 0">
+                    <td colspan="8" class="py-6 text-center text-slate-400 text-sm">Nothing here yet.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function receivablesPage() {
+    return {
+        people: [], cards: [], rows: [], summary: [],
+        showSettled: false,
+        filterDirection: '',
+        sel: {}, parts: {},
+        newPerson: { name: '' },
+        error: '',
+        form: { description: '', store: '', payment_method_id: null, charge_date: '', total: null, includeMe: true, direction: 'OWED_TO_ME', currency: 'USD' },
+
+        iOwe() { return this.form.direction === 'I_OWE'; },
+
+        async init() {
+            this.form.charge_date = new Date().toISOString().slice(0, 10);
+            await Promise.all([this.loadPeople(), this.loadCards(), this.loadRows(), this.loadSummary()]);
+        },
+        async loadPeople() { this.people = await (await fetch('/api/receivables/people')).json(); },
+        async loadCards() { this.cards = await (await fetch('/api/payment-methods?active_only=true')).json(); },
+        async loadRows() {
+            const params = new URLSearchParams();
+            if (!this.showSettled) params.set('settled', 'false');
+            if (this.filterDirection) params.set('direction', this.filterDirection);
+            const q = params.toString();
+            this.rows = await (await fetch('/api/receivables' + (q ? '?' + q : ''))).json();
+        },
+        async loadSummary() { this.summary = await (await fetch('/api/receivables/summary')).json(); },
+
+        toggle(id) {
+            this.sel[id] = !this.sel[id];
+            if (!this.sel[id]) delete this.parts[id];
+        },
+        participantCount() {
+            return Object.values(this.sel).filter(Boolean).length + (this.form.includeMe ? 1 : 0);
+        },
+        perHead() {
+            const n = this.participantCount();
+            return n > 0 && this.form.total ? (this.form.total / n) : 0;
+        },
+        splitEqual() {
+            const each = Math.round(this.perHead() * 100) / 100;
+            for (const p of this.people) if (this.sel[p.id]) this.parts[p.id] = each;
+        },
+        selectedTotal() {
+            return this.people.filter(p => this.sel[p.id])
+                .reduce((sum, p) => sum + (parseFloat(this.parts[p.id]) || 0), 0);
+        },
+        canSubmit() {
+            return this.form.description.trim() && this.selectedTotal() > 0;
+        },
+        // One entry per currency with open items; USD placeholder when empty.
+        totalsByCurrency() {
+            const by = {};
+            for (const s of this.summary) {
+                const t = by[s.currency] ||= { currency: s.currency, owed: 0, mine: 0, net: 0 };
+                t.owed += parseFloat(s.owed_to_me);
+                t.mine += parseFloat(s.i_owe);
+                t.net = t.owed - t.mine;
+            }
+            const list = Object.values(by).sort((a, b) => a.currency.localeCompare(b.currency));
+            return list.length ? list : [{ currency: 'USD', owed: 0, mine: 0, net: 0 }];
+        },
+
+        async submit() {
+            this.error = '';
+            const shares = this.people.filter(p => this.sel[p.id] && parseFloat(this.parts[p.id]) > 0)
+                .map(p => ({ person_id: p.id, amount: parseFloat(this.parts[p.id]).toFixed(2) }));
+            if (!shares.length) { this.error = 'Check at least one person with an amount.'; return; }
+            const body = {
+                description: this.form.description.trim(),
+                store: this.form.store.trim() || null,
+                payment_method_id: this.iOwe() ? null : (this.form.payment_method_id || null),
+                charge_date: this.form.charge_date,
+                currency: this.form.currency,
+                direction: this.form.direction,
+                shares,
+            };
+            const res = await fetch('/api/receivables', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            if (!res.ok) { this.error = 'Failed to save (' + res.status + ')'; return; }
+            this.sel = {}; this.parts = {};
+            this.form.description = ''; this.form.store = ''; this.form.total = null;
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async settle(id) {
+            await fetch(`/api/receivables/${id}/settle`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settled: true }),
+            });
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async unsettle(id) {
+            await fetch(`/api/receivables/${id}/settle`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settled: false }),
+            });
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async del(id) {
+            if (!confirm('Delete this charge?')) return;
+            await fetch(`/api/receivables/${id}`, { method: 'DELETE' });
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async addPerson() {
+            if (!this.newPerson.name.trim()) return;
+            const res = await fetch('/api/receivables/people', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: this.newPerson.name.trim() }),
+            });
+            if (res.ok) { this.newPerson = { name: '' }; await this.loadPeople(); }
+        },
+        formatAmount(a, currency = 'USD') {
+            return new Intl.NumberFormat(currency === 'BRL' ? 'pt-BR' : 'en-US',
+                { style: 'currency', currency }).format(parseFloat(a) || 0);
+        },
+    };
+}
+</script>
+{% endblock %}

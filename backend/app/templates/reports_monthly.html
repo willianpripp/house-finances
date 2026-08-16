@@ -1,0 +1,805 @@
+{% extends "base.html" %}
+
+{% block title %}Monthly Report — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="monthlyReport()" x-init="init()">
+
+    <!-- HEADER + PICKER -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+                <h2 class="text-2xl font-semibold text-slate-900">Monthly Report</h2>
+                <p class="text-sm text-slate-600">
+                    <span x-text="`${monthNames[selected.month - 1]} ${selected.year}`"></span>
+                    ·
+                    <template x-if="report?.totals?.is_finalized">
+                        <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-medium"
+                              title="Legacy snapshot (v1 import). Newer months compute live.">
+                            Snapshot
+                        </span>
+                    </template>
+                    <template x-if="!report?.totals?.is_finalized">
+                        <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-medium">
+                            Live
+                        </span>
+                    </template>
+                    <span class="text-xs text-slate-500 ml-2"
+                          x-show="report?.totals?.rate_effective">
+                        <!-- Optional chaining, not just the x-show above: x-show
+                             toggles visibility but Alpine still evaluates these
+                             bindings on first render, before the fetch resolves,
+                             which threw an uncaught TypeError on every page load. -->
+                        Rate: <span x-text="report?.totals?.rate_effective"></span>
+                        <span x-text="report?.totals?.rate_date ? `(${report.totals.rate_date})` : ''"></span>
+                    </span>
+                </p>
+            </div>
+            <div class="flex items-end gap-2">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Year</label>
+                    <select @change="selected.year = parseInt($event.target.value); reload()"
+                            class="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                        <template x-for="y in years" :key="y">
+                            <option :value="y" :selected="y === selected.year" x-text="y"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Month</label>
+                    <select @change="selected.month = parseInt($event.target.value); reload()"
+                            class="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                        <template x-for="(name, idx) in monthNames" :key="idx">
+                            <option :value="idx + 1" :selected="(idx + 1) === selected.month" x-text="name"></option>
+                        </template>
+                    </select>
+                </div>
+                <button @click="prevMonth()" class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50">‹</button>
+                <button @click="nextMonth()" class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50">›</button>
+                <template x-if="report">
+                    <button
+                        @click="openRollover()"
+                        title="Copy fixed bills to next month"
+                        class="px-3 py-1.5 text-sm rounded-md font-medium border border-sky-600 bg-sky-600 text-white hover:bg-sky-700">
+                        Roll fixed →
+                    </button>
+                </template>
+            </div>
+        </div>
+        <span x-show="loading" class="text-sm text-slate-500 mt-3 block">Loading…</span>
+        <span x-show="errorMessage" class="text-sm text-rose-600 mt-3 block" x-text="errorMessage"></span>
+    </div>
+
+    <template x-if="report">
+    <div>
+        <!-- SUMMARY CARDS -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Net Income</div>
+                <div class="text-xl font-semibold text-slate-900 mt-1" x-text="formatUsd(report.totals.net_income_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.net_income_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">
+                    Gross <span x-text="formatUsd(report.totals.gross_income_usd)"></span> · Taxes
+                    <span x-text="formatUsd(report.totals.taxes_usd)"></span>
+                </div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.net_income_usd, report.prior?.net_income_usd, true)"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Spending</div>
+                <div class="text-xl font-semibold text-slate-900 mt-1" x-text="formatUsd(report.totals.total_spending_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.total_spending_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">
+                    Fixed <span x-text="formatUsd(report.totals.fixed_spending_usd)"></span> · Var
+                    <span x-text="formatUsd(report.totals.variable_spending_usd)"></span>
+                </div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.total_spending_usd, report.prior?.total_spending_usd, false)"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Surplus</div>
+                <div class="text-xl font-semibold mt-1"
+                     :class="parseFloat(report.totals.surplus_usd) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                     x-text="formatUsd(report.totals.surplus_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.surplus_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">Income − Spending</div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.surplus_usd, report.prior?.surplus_usd, true)"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Savings</div>
+                <div class="text-xl font-semibold text-emerald-700 mt-1" x-text="formatUsd(report.totals.total_savings_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.total_savings_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">End of month</div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.total_savings_usd, report.prior?.total_savings_usd, true)"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Debt</div>
+                <div class="text-xl font-semibold text-rose-700 mt-1" x-text="formatUsd(report.totals.total_debt_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.total_debt_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">Cards + Car loan</div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.total_debt_usd, report.prior?.total_debt_usd, false)"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Net Worth</div>
+                <div class="text-xl font-semibold mt-1"
+                     :class="parseFloat(report.totals.net_worth_usd) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                     x-text="formatUsd(report.totals.net_worth_usd)"></div>
+                <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.net_worth_usd)"></div>
+                <div class="text-xs text-slate-500 mt-1">Savings − Debt (liquid)</div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.net_worth_usd, report.prior?.net_worth_usd, true)"></div>
+            </div>
+            <div class="bg-violet-50 rounded-lg shadow-sm border border-violet-200 p-4">
+                <div class="text-xs uppercase font-medium text-violet-700 tracking-wide">Total Worth</div>
+                <div class="text-xl font-semibold mt-1"
+                     :class="parseFloat(report.totals.total_worth_usd) >= 0 ? 'text-violet-900' : 'text-rose-700'"
+                     x-text="formatUsd(report.totals.total_worth_usd)"></div>
+                <div class="text-[10px] text-violet-500 font-mono" x-text="formatBrl(report.totals.total_worth_usd)"></div>
+                <div class="text-xs text-violet-700 mt-1">
+                    Net Worth + Assets
+                    (<span x-text="formatUsd(report.totals.assets_total_usd)"></span>)
+                </div>
+                <div class="text-xs mt-1" x-html="diffBadge(report.totals.total_worth_usd, report.prior?.total_worth_usd, true)"></div>
+            </div>
+        </div>
+
+        <!-- INCOME + CHART -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Income</h3>
+                <div class="space-y-2">
+                    <template x-for="b in report.income" :key="b.source">
+                        <div class="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0">
+                            <div>
+                                <div class="font-medium text-slate-800" x-text="sourceLabel(b.source)"></div>
+                                <div class="text-xs text-slate-500">
+                                    <span x-text="formatNative(b.amount_native, b.currency)"></span>
+                                </div>
+                                <div x-show="salaryTax(b.source) > 0"
+                                     class="text-[11px] text-rose-700 mt-0.5"
+                                     :title="`Taxes for ${sourceLabel(b.source)} this month`"
+                                     x-text="`taxes ${formatUsd(salaryTax(b.source))} (${salaryTaxPct(b.source)}%)`"></div>
+                            </div>
+                            <div class="text-slate-900 font-medium" x-text="formatUsd(b.amount_usd)"></div>
+                        </div>
+                    </template>
+                    <div x-show="(report.income || []).length === 0" class="text-sm text-slate-500 py-3 text-center">
+                        No income entries for this month.
+                    </div>
+                </div>
+                <div class="mt-4 pt-3 border-t border-slate-200 flex items-center justify-between text-sm">
+                    <div>
+                        <div class="text-slate-700 font-medium">Gross income</div>
+                        <div class="text-xs text-slate-500">Less taxes <span x-text="formatUsd(report.totals.taxes_usd)"></span></div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-slate-900 font-semibold" x-text="formatUsd(report.totals.gross_income_usd)"></div>
+                        <div class="text-xs text-emerald-700 font-medium">
+                            Net <span x-text="formatUsd(report.totals.net_income_usd)"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Spending by category</h3>
+                <div x-show="(report.by_category || []).length === 0" class="text-sm text-slate-500 py-12 text-center">
+                    No spending recorded for this month.
+                </div>
+                <div x-show="(report.by_category || []).length > 0">
+                    <canvas x-ref="categoryChart" class="max-w-full" style="max-height:280px"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- FIXED VS VARIABLE: aggregation -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">Fixed bills</h3>
+                    <div class="text-sm text-slate-700 font-medium" x-text="formatUsd(report.totals.fixed_spending_usd)"></div>
+                </div>
+                <div class="space-y-1">
+                    <template x-for="c in report.fixed_categories" :key="c.category_id">
+                        <div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+                            <div class="flex items-center gap-2">
+                                <span class="inline-block w-2.5 h-2.5 rounded-full" :style="`background:${c.color}`"></span>
+                                <span class="text-slate-700" x-text="(c.category_icon ? c.category_icon + ' ' : '') + c.category_name"></span>
+                                <span class="text-xs text-slate-400" x-text="`(${c.transaction_count})`"></span>
+                            </div>
+                            <span class="text-slate-900 font-medium" x-text="formatUsd(c.amount_usd)"></span>
+                        </div>
+                    </template>
+                    <div x-show="(report.fixed_categories || []).length === 0" class="text-sm text-slate-500 py-3 text-center">No fixed bills.</div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">Variable spending</h3>
+                    <div class="text-sm text-slate-700 font-medium" x-text="formatUsd(report.totals.variable_spending_usd)"></div>
+                </div>
+                <div class="space-y-1">
+                    <template x-for="c in report.variable_categories" :key="c.category_id">
+                        <div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+                            <div class="flex items-center gap-2">
+                                <span class="inline-block w-2.5 h-2.5 rounded-full" :style="`background:${c.color}`"></span>
+                                <span class="text-slate-700" x-text="(c.category_icon ? c.category_icon + ' ' : '') + c.category_name"></span>
+                                <span class="text-xs text-slate-400" x-text="`(${c.transaction_count})`"></span>
+                            </div>
+                            <span class="text-slate-900 font-medium" x-text="formatUsd(c.amount_usd)"></span>
+                        </div>
+                    </template>
+                    <div x-show="(report.variable_categories || []).length === 0" class="text-sm text-slate-500 py-3 text-center">No variable spending.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- NOT COUNTED AS SPENDING (exclude_from_spending: loan principal, transfers) -->
+        <div class="mt-6" x-show="(report.excluded_categories || []).length > 0">
+            <div class="bg-white rounded-lg shadow-sm border border-dashed border-slate-300 p-6">
+                <div class="flex items-center justify-between mb-1">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">Not counted as spending</h3>
+                    <div class="text-sm text-slate-700 font-medium" x-text="formatUsd(report.excluded_total_usd)"></div>
+                </div>
+                <p class="text-xs text-slate-500 mb-3">Money that left an account but isn't consumption — e.g. extra car-loan payments (principal paydown, already in net worth). Excluded from spending &amp; surplus.</p>
+                <div class="space-y-1">
+                    <template x-for="c in report.excluded_categories" :key="c.category_id">
+                        <div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+                            <div class="flex items-center gap-2">
+                                <span class="inline-block w-2.5 h-2.5 rounded-full" :style="`background:${c.color}`"></span>
+                                <span class="text-slate-700" x-text="(c.category_icon ? c.category_icon + ' ' : '') + c.category_name"></span>
+                                <span class="text-xs text-slate-400" x-text="`(${c.transaction_count})`"></span>
+                            </div>
+                            <span class="text-slate-900 font-medium" x-text="formatUsd(c.amount_usd)"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- FIXED VS VARIABLE: per-transaction listing -->
+        <div class="grid grid-cols-1 gap-6 mt-6">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">Fixed bills — transactions</h3>
+                    <div class="text-xs text-slate-500"><span x-text="(report.fixed_transactions || []).length"></span> rows</div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm table-fixed">
+                        <colgroup>
+                            <col class="w-[92px]">     <!-- Date -->
+                            <col>                      <!-- Merchant (flex) -->
+                            <col class="w-[140px]">    <!-- Category -->
+                            <col class="w-[120px]">    <!-- Payment -->
+                            <col class="w-[80px]">     <!-- Owner -->
+                            <col class="w-[60px]">     <!-- Inst. -->
+                            <col class="w-[110px]">    <!-- Native -->
+                            <col class="w-[90px]">     <!-- USD -->
+                        </colgroup>
+                        <thead class="text-xs uppercase text-slate-500">
+                            <tr class="border-b border-slate-200">
+                                <th class="text-left py-1.5">Date</th>
+                                <th class="text-left py-1.5">Merchant</th>
+                                <th class="text-left py-1.5">Category</th>
+                                <th class="text-left py-1.5">Payment</th>
+                                <th class="text-left py-1.5">Owner</th>
+                                <th class="text-left py-1.5">Inst.</th>
+                                <th class="text-right py-1.5">Native</th>
+                                <th class="text-right py-1.5 pl-2">USD</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="t in (report.fixed_transactions || [])" :key="t.id">
+                                <tr class="border-b border-slate-100">
+                                    <td class="py-1.5 text-slate-600 whitespace-nowrap" x-text="t.transaction_date"></td>
+                                    <td class="py-1.5">
+                                        <div class="text-slate-800 truncate flex items-center gap-1" :title="t.merchant_name + (productDetail(t) ? ' — ' + productDetail(t) : '')">
+                                            <span class="truncate" x-text="t.merchant_name"></span>
+                                            <span x-show="t.pending" class="shrink-0 px-1 py-0.5 text-[10px] bg-orange-100 text-orange-700 rounded" title="Plaid pending — provisional; amount may change when it posts">pending</span>
+                                        </div>
+                                        <div x-show="productDetail(t)" class="text-xs text-slate-500 truncate" :title="productDetail(t)" x-text="productDetail(t)"></div>
+                                    </td>
+                                    <td class="py-1.5">
+                                        <span class="inline-flex items-center gap-1.5">
+                                            <span class="inline-block w-2 h-2 rounded-full" :style="`background:${t.category_color}`"></span>
+                                            <span class="text-slate-700" x-text="(t.category_icon ? t.category_icon + ' ' : '') + t.category_name"></span>
+                                        </span>
+                                    </td>
+                                    <td class="py-1.5 text-slate-700 truncate" :title="t.payment_method_name" x-text="t.payment_method_name"></td>
+                                    <td class="py-1.5 text-slate-700" x-text="t.owner_name || '—'"></td>
+                                    <td class="py-1.5 text-xs">
+                                        <span x-show="t.installment_total > 1"
+                                              class="px-1.5 py-0.5 rounded font-mono"
+                                              :class="t.installment_current >= t.installment_total
+                                                  ? 'bg-rose-100 text-rose-700 font-semibold'
+                                                  : (t.installment_current + 1 === t.installment_total
+                                                      ? 'bg-amber-100 text-amber-700'
+                                                      : 'text-slate-500')"
+                                              x-text="`${t.installment_current}/${t.installment_total}${t.installment_current >= t.installment_total ? ' ✓' : ''}`"></span>
+                                    </td>
+                                    <td class="py-1.5 text-right text-slate-700 whitespace-nowrap"
+                                        x-text="formatNative(t.amount_native, t.currency)"></td>
+                                    <td class="py-1.5 pl-2 text-right text-slate-900 font-medium whitespace-nowrap"
+                                        x-text="formatUsd(t.amount_usd)"></td>
+                                </tr>
+                            </template>
+                            <tr x-show="(report.fixed_transactions || []).length === 0">
+                                <td colspan="8" class="text-center text-slate-500 py-3">No fixed transactions.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">Variable spending — transactions</h3>
+                    <div class="text-xs text-slate-500"><span x-text="(report.variable_transactions || []).length"></span> rows</div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm table-fixed">
+                        <colgroup>
+                            <col class="w-[92px]">     <!-- Date -->
+                            <col>                      <!-- Merchant (flex) -->
+                            <col class="w-[140px]">    <!-- Category -->
+                            <col class="w-[120px]">    <!-- Payment -->
+                            <col class="w-[80px]">     <!-- Owner -->
+                            <col class="w-[60px]">     <!-- Inst. -->
+                            <col class="w-[110px]">    <!-- Native -->
+                            <col class="w-[90px]">     <!-- USD -->
+                        </colgroup>
+                        <thead class="text-xs uppercase text-slate-500">
+                            <tr class="border-b border-slate-200">
+                                <th class="text-left py-1.5">Date</th>
+                                <th class="text-left py-1.5">Merchant</th>
+                                <th class="text-left py-1.5">Category</th>
+                                <th class="text-left py-1.5">Payment</th>
+                                <th class="text-left py-1.5">Owner</th>
+                                <th class="text-left py-1.5">Inst.</th>
+                                <th class="text-right py-1.5">Native</th>
+                                <th class="text-right py-1.5 pl-2">USD</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="t in (report.variable_transactions || [])" :key="t.id">
+                                <tr class="border-b border-slate-100">
+                                    <td class="py-1.5 text-slate-600 whitespace-nowrap" x-text="t.transaction_date"></td>
+                                    <td class="py-1.5">
+                                        <div class="text-slate-800 truncate flex items-center gap-1" :title="t.merchant_name + (productDetail(t) ? ' — ' + productDetail(t) : '')">
+                                            <span class="truncate" x-text="t.merchant_name"></span>
+                                            <span x-show="t.pending" class="shrink-0 px-1 py-0.5 text-[10px] bg-orange-100 text-orange-700 rounded" title="Plaid pending — provisional; amount may change when it posts">pending</span>
+                                        </div>
+                                        <div x-show="productDetail(t)" class="text-xs text-slate-500 truncate" :title="productDetail(t)" x-text="productDetail(t)"></div>
+                                    </td>
+                                    <td class="py-1.5">
+                                        <span class="inline-flex items-center gap-1.5">
+                                            <span class="inline-block w-2 h-2 rounded-full" :style="`background:${t.category_color}`"></span>
+                                            <span class="text-slate-700" x-text="(t.category_icon ? t.category_icon + ' ' : '') + t.category_name"></span>
+                                        </span>
+                                    </td>
+                                    <td class="py-1.5 text-slate-700 truncate" :title="t.payment_method_name" x-text="t.payment_method_name"></td>
+                                    <td class="py-1.5 text-slate-700" x-text="t.owner_name || '—'"></td>
+                                    <td class="py-1.5 text-xs">
+                                        <span x-show="t.installment_total > 1"
+                                              class="px-1.5 py-0.5 rounded font-mono"
+                                              :class="t.installment_current >= t.installment_total
+                                                  ? 'bg-rose-100 text-rose-700 font-semibold'
+                                                  : (t.installment_current + 1 === t.installment_total
+                                                      ? 'bg-amber-100 text-amber-700'
+                                                      : 'text-slate-500')"
+                                              x-text="`${t.installment_current}/${t.installment_total}${t.installment_current >= t.installment_total ? ' ✓' : ''}`"></span>
+                                    </td>
+                                    <td class="py-1.5 text-right text-slate-700 whitespace-nowrap"
+                                        x-text="formatNative(t.amount_native, t.currency)"></td>
+                                    <td class="py-1.5 pl-2 text-right text-slate-900 font-medium whitespace-nowrap"
+                                        x-text="formatUsd(t.amount_usd)"></td>
+                                </tr>
+                            </template>
+                            <tr x-show="(report.variable_transactions || []).length === 0">
+                                <td colspan="8" class="text-center text-slate-500 py-3">No variable transactions.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    </template>
+
+    <!-- ROLLOVER MODAL -->
+    <div x-show="rollover.open" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+         @keydown.escape.window="rollover.open = false">
+        <div class="bg-white rounded-lg shadow-xl border border-slate-200 max-w-4xl w-full max-h-[92vh] flex flex-col">
+            <div class="px-6 py-4 border-b border-slate-200 flex items-start justify-between gap-4">
+                <div>
+                    <h3 class="text-lg font-semibold text-slate-900">
+                        Roll fixed bills:
+                        <span x-text="`${monthNames[selected.month - 1]} ${selected.year}`"></span>
+                        →
+                        <span x-text="rollover.preview ? `${monthNames[rollover.preview.target_month - 1]} ${rollover.preview.target_year}` : ''"></span>
+                    </h3>
+                    <p class="text-sm text-slate-600 mt-1">
+                        Scope: <em>INSTALLMENT series</em> (car loan installment 19 of 72, phone plan, etc.) +
+                        <em>Taxes placeholders</em> (Federal/State Withholding, accountant fee) only.
+                        Everything else (Rent, Netflix, gym, Internet, …) is auto-propagated by the
+                        importer when the real debit lands — no manual rollover needed.
+                    </p>
+                </div>
+                <div class="text-sm text-slate-600 whitespace-nowrap">
+                    <span x-text="rollover.selectedCount()"></span> of
+                    <span x-text="rollover.preview ? rollover.preview.items.length : 0"></span> selected
+                </div>
+            </div>
+
+            <div class="px-6 py-3 border-b border-slate-100 flex items-center gap-2 text-xs">
+                <button @click="rollover.selectAll(true)" class="px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">Select all</button>
+                <button @click="rollover.selectAll(false)" class="px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">Clear</button>
+                <button @click="rollover.selectOnlyNotExisting()" class="px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">Only not-already-in-target</button>
+                <span x-show="rollover.preview && rollover.preview.items.length === 0" class="text-slate-500 ml-2">No fixed transactions in source month.</span>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-6 py-3">
+                <table class="w-full text-sm">
+                    <thead class="text-xs text-slate-500 uppercase">
+                        <tr class="border-b border-slate-200">
+                            <th class="text-left py-2 w-8"></th>
+                            <th class="text-left py-2">Merchant</th>
+                            <th class="text-left py-2">Category</th>
+                            <th class="text-left py-2">Payment</th>
+                            <th class="text-left py-2">Owner</th>
+                            <th class="text-right py-2">Amount</th>
+                            <th class="text-left py-2 pl-3">Target date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="row in rollover.rows" :key="row.source_transaction_id">
+                            <tr class="border-b border-slate-100"
+                                :class="(row.installment_complete || row.contract_complete) ? 'bg-rose-50/60' : (row.already_in_target ? 'bg-amber-50/50' : '')">
+                                <td class="py-1.5">
+                                    <input type="checkbox" x-model="row.selected"
+                                           :disabled="row.installment_complete || row.contract_complete"
+                                           :title="row.installment_complete ? 'Final installment — series is over' : (row.contract_complete ? `Contract ended ${row.contract_end_date}` : '')">
+                                </td>
+                                <td class="py-1.5">
+                                    <div class="text-slate-800 flex items-center gap-1.5">
+                                        <span x-text="row.merchant_name"></span>
+                                        <span x-show="row.installment_total > 1"
+                                              class="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                                              :class="row.installment_complete ? 'bg-rose-100 text-rose-700' : 'bg-sky-100 text-sky-700'"
+                                              x-text="row.installment_complete
+                                                  ? `${row.installment_current}/${row.installment_total} (last)`
+                                                  : `${row.installment_current}/${row.installment_total} → ${row.installment_current + 1}/${row.installment_total}`"></span>
+                                        <span x-show="row.recurrence_kind === 'CONTRACT' && row.contract_end_date"
+                                              class="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                                              :class="row.contract_complete ? 'bg-rose-100 text-rose-700' : 'bg-violet-100 text-violet-700'"
+                                              x-text="`ends ${row.contract_end_date}`"></span>
+                                    </div>
+                                    <div class="text-xs text-amber-700" x-show="row.already_in_target && !row.installment_complete && !row.contract_complete">already in target month</div>
+                                    <div class="text-xs text-rose-700" x-show="row.installment_complete">series ends here — won't roll</div>
+                                    <div class="text-xs text-rose-700" x-show="row.contract_complete">contract has ended — review for renewal</div>
+                                </td>
+                                <td class="py-1.5">
+                                    <span class="inline-flex items-center gap-1.5">
+                                        <span class="inline-block w-2 h-2 rounded-full" :style="`background:${row.category_color}`"></span>
+                                        <span class="text-slate-700" x-text="row.category_name"></span>
+                                    </span>
+                                </td>
+                                <td class="py-1.5 text-slate-700" x-text="row.payment_method_name"></td>
+                                <td class="py-1.5 text-slate-700" x-text="row.owner_name || '—'"></td>
+                                <td class="py-1.5">
+                                    <div class="flex flex-col items-end gap-0.5">
+                                        <div class="flex items-center justify-end gap-1">
+                                            <input type="number" step="0.01" min="0.01" x-model.number="row.amount"
+                                                   :disabled="row.installment_total > 1"
+                                                   :title="row.installment_total > 1 ? 'Full purchase price (locked for installment series)' : ''"
+                                                   class="w-24 text-right border border-slate-300 rounded px-1.5 py-0.5 disabled:bg-slate-50 disabled:text-slate-500">
+                                            <span class="text-xs text-slate-500" x-text="row.currency"></span>
+                                        </div>
+                                        <span x-show="row.installment_total > 1 && row.installment_value"
+                                              class="text-[10px] text-slate-500"
+                                              x-text="`per inst: ${parseFloat(row.installment_value).toFixed(2)}`"></span>
+                                    </div>
+                                </td>
+                                <td class="py-1.5 pl-3">
+                                    <input type="date" x-model="row.target_date"
+                                           :disabled="row.installment_complete || row.contract_complete"
+                                           class="border border-slate-300 rounded px-1.5 py-0.5 text-sm disabled:bg-slate-50">
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <div x-show="rollover.error" class="mt-3 text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded p-2"
+                     x-text="rollover.error"></div>
+            </div>
+
+            <div class="px-6 py-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button @click="rollover.open = false" :disabled="rollover.busy"
+                        class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50">
+                    Cancel
+                </button>
+                <button @click="confirmRollover()"
+                        :disabled="rollover.busy || rollover.selectedCount() === 0"
+                        class="px-3 py-1.5 text-sm rounded-md bg-sky-600 text-white font-medium hover:bg-sky-700 disabled:opacity-50">
+                    <span x-show="!rollover.busy">Roll <span x-text="rollover.selectedCount()"></span> →</span>
+                    <span x-show="rollover.busy">Rolling…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script src="/static/vendor/chart-4.4.4.min.js"></script>
+<script>
+function monthlyReport() {
+    const today = new Date();
+    return {
+        selected: {year: today.getFullYear(), month: today.getMonth() + 1},
+        years: [today.getFullYear() - 2, today.getFullYear() - 1, today.getFullYear(), today.getFullYear() + 1],
+        monthNames: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        // Salary labels are household config, injected by the route; the rest
+        // are fixed enum values.
+        sourceLabels: Object.assign({
+            rents_brazil: 'Rents (Brazil)',
+            extra_usd: 'Extra (USD)',
+            extra_brl: 'Extra (BRL)',
+        }, {{ salary_labels | tojson }}),
+        report: null,
+        loading: false,
+        errorMessage: '',
+        chart: null,
+        rollover: {
+            open: false, busy: false, error: '',
+            preview: null, rows: [],
+            selectedCount() { return this.rows.filter(r => r.selected).length; },
+            selectAll(v) { this.rows.forEach(r => { if (!r.installment_complete && !r.contract_complete) r.selected = v; }); },
+            selectOnlyNotExisting() { this.rows.forEach(r => { r.selected = !r.already_in_target && !r.installment_complete && !r.contract_complete; }); },
+        },
+
+        async init() {
+            const url = new URL(window.location);
+            const y = parseInt(url.searchParams.get('year'));
+            const m = parseInt(url.searchParams.get('month'));
+            if (y && m) {
+                this.selected.year = y;
+                this.selected.month = m;
+            } else {
+                try {
+                    const res = await fetch('/api/reports/monthly/default');
+                    if (res.ok) {
+                        const d = await res.json();
+                        this.selected.year = d.year;
+                        this.selected.month = d.month;
+                    }
+                } catch (e) { /* fall back to today's month */ }
+            }
+            this.years = [today.getFullYear() - 2, today.getFullYear() - 1, today.getFullYear(), today.getFullYear() + 1];
+            await this.reload();
+        },
+
+        async reload() {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch(`/api/reports/monthly?year=${this.selected.year}&month=${this.selected.month}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.report = await res.json();
+                const u = new URL(window.location);
+                u.searchParams.set('year', this.selected.year);
+                u.searchParams.set('month', this.selected.month);
+                window.history.replaceState(null, '', u.toString());
+                this.$nextTick(() => this.renderChart());
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        renderChart() {
+            const cats = this.report?.by_category || [];
+            const el = this.$refs.categoryChart;
+            // isConnected: the canvas lives inside `x-if="report"`, so Alpine
+            // replaces the whole subtree on re-render. Drawing into a detached
+            // canvas silently produces nothing.
+            if (cats.length === 0 || !el || !el.isConnected) return;
+
+            // Why this is not just `if (this.chart) this.chart.destroy()`:
+            // this.chart may be bound to a canvas Alpine has already replaced,
+            // and Chart.js destroy() dereferences canvas.ownerDocument, so it
+            // threw "Cannot read properties of null (reading 'ownerDocument')".
+            // The throw happened BEFORE `new Chart(...)`, so the chart was never
+            // created and the category doughnut stayed blank on every load and
+            // every month switch, with only one console error to show for it.
+            //
+            // Chart.getChart(el) finds whatever is bound to the canvas actually
+            // in the DOM right now, which is the thing that must be released.
+            const bound = (window.Chart && Chart.getChart) ? Chart.getChart(el) : null;
+            if (bound) bound.destroy();
+            if (this.chart && this.chart !== bound) {
+                try { this.chart.destroy(); } catch (e) { /* canvas already detached */ }
+            }
+
+            this.chart = new Chart(el, {
+                type: 'doughnut',
+                data: {
+                    labels: cats.map(c => (c.category_icon ? c.category_icon + ' ' : '') + c.category_name),
+                    datasets: [{
+                        data: cats.map(c => parseFloat(c.amount_usd)),
+                        backgroundColor: cats.map(c => c.color),
+                        borderWidth: 1,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {boxWidth: 10, font: {size: 11}},
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => `${ctx.label}: $${parseFloat(ctx.parsed).toFixed(2)}`,
+                            },
+                        },
+                    },
+                },
+            });
+        },
+
+        prevMonth() {
+            if (this.selected.month === 1) {
+                this.selected.month = 12;
+                this.selected.year -= 1;
+            } else {
+                this.selected.month -= 1;
+            }
+            this.reload();
+        },
+        nextMonth() {
+            if (this.selected.month === 12) {
+                this.selected.month = 1;
+                this.selected.year += 1;
+            } else {
+                this.selected.month += 1;
+            }
+            this.reload();
+        },
+
+        async openRollover() {
+            this.rollover.error = '';
+            this.rollover.preview = null;
+            this.rollover.rows = [];
+            this.rollover.open = true;
+            try {
+                const res = await fetch(
+                    `/api/reports/monthly/rollover/preview?year=${this.selected.year}&month=${this.selected.month}`,
+                );
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const p = await res.json();
+                this.rollover.preview = p;
+                this.rollover.rows = p.items.map(i => ({
+                    ...i,
+                    target_date: i.suggested_target_date,
+                    selected: !i.already_in_target && !i.installment_complete && !i.contract_complete,
+                }));
+            } catch (e) {
+                this.rollover.error = e.message;
+            }
+        },
+        async confirmRollover() {
+            this.rollover.busy = true;
+            this.rollover.error = '';
+            try {
+                const items = this.rollover.rows
+                    .filter(r => r.selected)
+                    .map(r => ({
+                        source_transaction_id: r.source_transaction_id,
+                        target_date: r.target_date,
+                        amount: r.amount,
+                    }));
+                const res = await fetch(
+                    `/api/reports/monthly/rollover/commit?year=${this.selected.year}&month=${this.selected.month}`,
+                    {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({items}),
+                    },
+                );
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(body.detail || `HTTP ${res.status}`);
+                }
+                const out = await res.json();
+                this.rollover.open = false;
+                this.selected.year = out.target_year;
+                this.selected.month = out.target_month;
+                await this.reload();
+            } catch (e) {
+                this.rollover.error = e.message;
+            } finally {
+                this.rollover.busy = false;
+            }
+        },
+
+        sourceLabel(s) { return this.sourceLabels[s] || s; },
+
+        formatUsd(value) {
+            if (value === null || value === undefined) return '';
+            const n = parseFloat(value);
+            if (Number.isNaN(n)) return '';
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        formatBrl(usdValue) {
+            const rate = parseFloat(this.report?.totals?.rate_effective);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(usdValue);
+            if (Number.isNaN(n)) return '';
+            const brl = n * rate;
+            const sign = brl < 0 ? '-' : '';
+            return `${sign}R$ ${Math.abs(brl).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        formatNative(value, currency) {
+            if (value === null || value === undefined) return '';
+            const n = parseFloat(value);
+            return `${currency} ${n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        // Subtitle below the merchant when description carries extra info.
+        // Some store-card statements prefix the description with
+        // "MERCHANT BLOCK - product"; show only the part after the last " - ".
+        // Returns "" when the description is identical to merchant_name or
+        // missing — keeps the row compact when there's nothing new to say.
+        productDetail(t) {
+            const desc = (t.description || '').trim();
+            if (!desc) return '';
+            const idx = desc.lastIndexOf(' - ');
+            const detail = idx > -1 ? desc.substring(idx + 3).trim() : desc;
+            if (!detail || detail === t.merchant_name) return '';
+            return detail;
+        },
+        sourceLabel(source) {
+            return this.sourceLabels[source] || source;
+        },
+        salaryTax(source) {
+            const t = this.report?.totals;
+            if (!t) return 0;
+            if (source === 'partner_salary')  return parseFloat(t.taxes_partner_usd) || 0;
+            if (source === 'primary_salary') return parseFloat(t.taxes_primary_usd) || 0;
+            return 0;
+        },
+        salaryTaxPct(source) {
+            const t = this.report?.totals;
+            if (!t) return '0';
+            let gross = 0;
+            let tax = 0;
+            if (source === 'partner_salary')  { gross = parseFloat(t.partner_salary_usd); tax = parseFloat(t.taxes_partner_usd); }
+            if (source === 'primary_salary'){ gross = parseFloat(t.primary_salary_usd); tax = parseFloat(t.taxes_primary_usd); }
+            if (!gross || Number.isNaN(gross) || gross <= 0) return '0';
+            return (100 * tax / gross).toFixed(1);
+        },
+        diffBadge(current, prior, higherIsBetter) {
+            if (prior === null || prior === undefined) return '';
+            const c = parseFloat(current);
+            const p = parseFloat(prior);
+            if (Number.isNaN(c) || Number.isNaN(p)) return '';
+            const diff = c - p;
+            if (Math.abs(diff) < 0.01) {
+                return `<span class="text-slate-400">↔ vs prev</span>`;
+            }
+            const isPositive = diff > 0;
+            const isGood = (isPositive && higherIsBetter) || (!isPositive && !higherIsBetter);
+            const cls = isGood ? 'text-emerald-700' : 'text-rose-700';
+            const arrow = isPositive ? '▲' : '▼';
+            const sign = isPositive ? '+' : '';
+            return `<span class="${cls}">${arrow} ${sign}${diff.toFixed(2)} vs prev</span>`;
+        },
+    }
+}
+</script>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}

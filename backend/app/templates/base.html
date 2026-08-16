@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <script>
+        // Apply persisted theme before Tailwind/Alpine load — prevents a flash
+        // of light content on dark-mode page load.
+        (function() {
+            try {
+                var pref = localStorage.getItem('hf_theme');
+                if (pref === 'dark') document.documentElement.classList.add('dark');
+            } catch (e) { /* localStorage may be blocked — fall back to light */ }
+        })();
+    </script>
+    <script>
+        // The Play CDN build console.warn()s "cdn.tailwindcss.com should not be
+        // used in production" unconditionally, even when self-hosted like here.
+        // Muzzle that one line while it loads; every other warning still shows.
+        window.__warn = console.warn;
+        console.warn = function (m) {
+            if (typeof m === 'string' && m.indexOf('cdn.tailwindcss.com') === 0) return;
+            window.__warn.apply(console, arguments);
+        };
+    </script>
+    {# Vendored, not CDN: the app must work with no internet (see
+       static/vendor/README.md). Version lives in the filename, which is the
+       cache-buster for these files. #}
+    <script src="/static/vendor/tailwind-3.4.17.js"></script>
+    <script>
+        console.warn = window.__warn;
+        // Enable Tailwind's class-based dark mode so `dark:` variants kick in
+        // when <html> has .dark. Must run before any rendering.
+        if (window.tailwind) {
+            tailwind.config = { darkMode: 'class' };
+        }
+    </script>
+    <script src="/static/vendor/htmx-1.9.12.min.js"></script>
+    <script defer src="/static/vendor/alpine-3.14.1.min.js"></script>
+    <!-- Path-relative on purpose, NOT url_for(): Starlette's url_for builds an
+         absolute URL from the request scope, and uvicorn behind a TLS-terminating
+         reverse proxy sees plain http. On the https origin the browser then blocks
+         the stylesheet as mixed content, and the whole dark-mode override sheet
+         silently never loads. -->
+    <link rel="stylesheet" href="/static/css/styles.css?v=16a0">
+    <style>
+        /* Inline failsafe in case styles.css was cached by the browser
+         * before Phase 15b shipped. Picks up the same overlay rules so
+         * dark mode is never a no-op on first load. */
+        html.dark, html.dark body { background-color: #0f172a !important; color: #e2e8f0 !important; }
+        html.dark .bg-white { background-color: #1e293b !important; }
+        html.dark .bg-slate-50 { background-color: #0f172a !important; }
+        html.dark .bg-slate-100 { background-color: #1e293b !important; }
+        html.dark .border-slate-100 { border-color: #1e293b !important; }
+        html.dark .border-slate-200 { border-color: #334155 !important; }
+        html.dark .border-slate-300 { border-color: #475569 !important; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+    <nav class="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between"
+         x-data="themeNav()">
+        <div class="flex items-center gap-6">
+            <a href="/" class="flex items-center gap-3 hover:opacity-80">
+                <h1 class="text-xl font-semibold text-slate-900">{{ app_name }}</h1>
+                <span class="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">v2.5</span>
+            </a>
+            <div class="flex items-center gap-5 text-sm">
+                <a href="/" class="text-slate-600 hover:text-slate-900 font-medium">Home</a>
+                <a href="/guide" class="text-slate-600 hover:text-slate-900">Guide</a>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            {# 🏠 = household portal (one meaning across the household's apps).
+               Deployment config: no portal_url, no icon. #}
+            {% if portal_url %}
+            <a href="{{ portal_url }}" title="Home portal"
+               class="text-lg leading-none no-underline p-2 -m-2 opacity-75 hover:opacity-100 transition-opacity">🏠</a>
+            {% endif %}
+            <button @click="toggleTheme()"
+                    :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+                    class="text-lg leading-none hover:scale-110 transition-transform">
+                <span x-show="theme === 'light'">🌙</span>
+                <span x-show="theme === 'dark'">☀️</span>
+            </button>
+            <form method="post" action="/ui" class="m-0">
+                <button type="submit" name="choice" value="phone" title="Switch to the phone version"
+                        class="text-lg leading-none hover:scale-110 transition-transform">📱</button>
+            </form>
+            <form method="post" action="/logout" class="m-0">
+                <button type="submit" title="Sign out"
+                        class="text-sm text-slate-500 hover:text-slate-900">Sign out</button>
+            </form>
+        </div>
+    </nav>
+    <main class="max-w-screen-2xl mx-auto px-6 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        function themeNav() {
+            return {
+                theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+                toggleTheme() {
+                    this.theme = this.theme === 'dark' ? 'light' : 'dark';
+                    if (this.theme === 'dark') {
+                        document.documentElement.classList.add('dark');
+                    } else {
+                        document.documentElement.classList.remove('dark');
+                    }
+                    try { localStorage.setItem('hf_theme', this.theme); } catch (e) { /* ignore */ }
+                },
+            };
+        }
+    </script>
+</body>
+</html>

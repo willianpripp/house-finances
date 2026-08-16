@@ -1,0 +1,1160 @@
+{% extends "base.html" %}
+
+{% block title %}Imports — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="importsPage()" x-init="loadPaymentMethods(); loadUsers(); loadCategories(); loadMerchants()">
+
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-8 mb-6">
+        <h2 class="text-2xl font-semibold text-slate-900 mb-1">Import Statement</h2>
+        <p class="text-slate-600 text-sm mb-4">
+            Upload a credit-card CSV/MD or a bank-checking PDF statement. Select the account first and the
+            filename pattern its parser expects shows up under the dropdown. Or paste checking / credit-card
+            activity raw before the official statement closes, useful mid-month to keep <code>/debts</code> fresh.
+        </p>
+
+        <!-- Mode toggle -->
+        <div class="inline-flex rounded-md border border-slate-300 mb-5 text-sm overflow-hidden">
+            <button type="button" @click="setMode('file')"
+                    :class="inputMode === 'file' ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'"
+                    class="px-4 py-1.5 font-medium">Upload file</button>
+            <button type="button" @click="setMode('paste')"
+                    :class="inputMode === 'paste' ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'"
+                    class="px-4 py-1.5 font-medium border-l border-slate-300">Paste activity</button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="md:col-span-1">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Payment Method</label>
+                <select x-model.number="paymentMethodId"
+                        class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">Select…</option>
+                    <template x-for="pm in availablePms()" :key="pm.id">
+                        <option :value="pm.id" x-text="`${pm.name} (${pm.currency})`"></option>
+                    </template>
+                </select>
+                <p x-show="paymentMethodId && formatHint" x-cloak
+                   class="mt-1 text-xs text-slate-500" x-text="formatHint"></p>
+            </div>
+
+            <div class="md:col-span-1">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Default Owner</label>
+                <select x-model.number="defaultOwnerUserId"
+                        class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <template x-for="u in users" :key="u.id">
+                        <option :value="u.id" x-text="u.name"></option>
+                    </template>
+                </select>
+            </div>
+
+            <div class="md:col-span-2" x-show="inputMode === 'file'">
+                <label class="block text-sm font-medium text-slate-700 mb-1">File</label>
+                <div @dragover.prevent="dragover = true"
+                     @dragleave.prevent="dragover = false"
+                     @drop.prevent="handleDrop($event)"
+                     :class="dragover ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'"
+                     class="border-2 border-dashed rounded-md p-4 text-center transition-colors">
+                    <input type="file" x-ref="fileInput" @change="handleFileChange($event)"
+                           class="hidden" accept=".csv,.pdf">
+                    <button type="button" @click="$refs.fileInput.click()"
+                            class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                        Browse
+                    </button>
+                    <span class="text-sm text-slate-500"> or drop a file here</span>
+                    <div x-show="selectedFile" class="mt-2 text-sm text-slate-700 font-medium" x-text="selectedFile?.name"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Paste mode inputs -->
+        <div x-show="inputMode === 'paste'" x-cloak class="mb-6">
+            <!-- Checking-only knobs (date format, decimal mark). The card
+                 paste layout has a fixed `Mon DD YYYY` + US `$` shape, so we
+                 hide them for credit-card PMs. -->
+            <div x-show="!pmIsCc()" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-700 mb-1">Default year (for MM/DD dates)</label>
+                    <input type="number" x-model.number="pasteDefaultYear"
+                           class="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-700 mb-1">Date format</label>
+                    <select x-model="pasteDateFormat"
+                            class="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+                        <option value="us">US — MM/DD or MM/DD/YYYY</option>
+                        <option value="br">BR — DD/MM or DD/MM/YYYY</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-700 mb-1">Decimal mark</label>
+                    <select x-model="pasteDecimalMark"
+                            class="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+                        <option value="us">US — 1,234.56</option>
+                        <option value="br">BR — 1.234,56</option>
+                    </select>
+                </div>
+            </div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Activity</label>
+            <textarea x-model="pasteText" rows="12"
+                      :placeholder="pmIsCc() ? 'Type\tDate\tDescription\tStatus\tAmount\nType\nPurchase\nDateMay 5 2026\tDescription\nONLINE RETAILER SEATTLE WA\n\nGift card in M\n\nStatus\nCompleted\nAmount\n$50.00\n...' : '2026-05-04\tCAR LOAN RET\t-612.44\n2026-05-04\tRiverside Apartm\t-1850.00\n...'"
+                      class="w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono"></textarea>
+            <p x-show="!pmIsCc()" class="text-xs text-slate-500 mt-1">
+                One row per line: <code>DATE &nbsp; DESCRIPTION &nbsp; AMOUNT</code>. Tabs or 2+ spaces between fields.
+                Negative = debit (paren OK: <code>(534.89)</code>). No SavingsSnapshot is written from paste — only the PDF statement closes the period.
+            </p>
+            <p x-show="pmIsCc()" class="text-xs text-slate-500 mt-1">
+                Vertical recent-activity layout, one stanza per transaction. Stanzas are
+                <code>Type / Purchase|Payment|Refund / DateMon DD YYYY / merchant / [product] / Status / Completed / Amount / $X.XX</code>.
+                <code>Pending</code> and <code>Scheduled</code> rows are skipped automatically.
+            </p>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button @click="loadPreview()"
+                    :disabled="!canPreview() || loading"
+                    :class="canPreview() && !loading ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed'"
+                    class="px-4 py-2 rounded-md text-white text-sm font-medium transition-colors">
+                <span x-show="!loading">Preview</span>
+                <span x-show="loading">Parsing…</span>
+            </button>
+            <button x-show="preview" @click="reset()"
+                    class="px-4 py-2 rounded-md text-slate-700 text-sm font-medium hover:bg-slate-100">
+                Reset
+            </button>
+            <span x-show="errorMessage" class="text-sm text-rose-600" x-text="errorMessage"></span>
+        </div>
+    </div>
+
+    <!-- PREVIEW -->
+    <div x-show="preview" x-cloak class="bg-white rounded-lg shadow-sm border border-slate-200 p-8">
+        <div class="flex items-start justify-between mb-6">
+            <div>
+                <h3 class="text-xl font-semibold text-slate-900 mb-1">Preview</h3>
+                <p class="text-sm text-slate-600">
+                    Parser: <span class="font-medium" x-text="preview?.parser"></span> ·
+                    Method: <span class="font-medium" x-text="preview?.payment_method_name"></span>
+                    (<span x-text="preview?.currency"></span>)
+                </p>
+                <p class="text-xs text-slate-500 mt-1">
+                    Edit Category / Merchant inline before committing. Tick
+                    <span class="font-medium">Save&nbsp;rule</span> to remember
+                    your choice for the next import (auto-creates a categorization
+                    rule from the first two words of the description).
+                </p>
+            </div>
+            <button @click="commitImport()"
+                    :disabled="committing || preview?.new_count === 0"
+                    :class="preview?.new_count > 0 && !committing ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                    class="px-5 py-2.5 rounded-md text-white text-sm font-medium transition-colors">
+                <span x-show="!committing">Commit</span>
+                <span x-show="committing">Saving…</span>
+            </button>
+        </div>
+
+        <!-- counters -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+            <div class="bg-emerald-50 border border-emerald-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-emerald-700 tracking-wide">New</div>
+                <div class="text-2xl font-semibold text-emerald-900" x-text="preview?.new_count"></div>
+            </div>
+            <div class="bg-amber-50 border border-amber-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-amber-700 tracking-wide">Duplicates</div>
+                <div class="text-2xl font-semibold text-amber-900" x-text="preview?.duplicate_count"></div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">Skipped</div>
+                <div class="text-2xl font-semibold text-slate-700" x-text="preview?.skipped_count"></div>
+            </div>
+            <div class="bg-blue-50 border border-blue-200 rounded-md p-3" title="Shown for reconciliation; not persisted">
+                <div class="text-xs uppercase font-medium text-blue-700 tracking-wide">Payments (info)</div>
+                <div class="text-2xl font-semibold text-blue-900" x-text="preview?.payments.length"></div>
+            </div>
+            <div class="bg-purple-50 border border-purple-200 rounded-md p-3">
+                <div class="text-xs uppercase font-medium text-purple-700 tracking-wide">New Merchants</div>
+                <div class="text-2xl font-semibold text-purple-900" x-text="preview?.new_merchants.length"></div>
+            </div>
+        </div>
+
+        <!-- transactions table -->
+        <div x-show="preview?.transactions.length" class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-slate-100 text-slate-700 text-left">
+                        <th class="px-3 py-2 font-medium w-8">
+                            <input type="checkbox" :checked="allCcSelected()"
+                                   @change="toggleAllCc($event.target.checked)"
+                                   title="Toggle all"
+                                   class="cursor-pointer">
+                        </th>
+                        <th class="px-3 py-2 font-medium">Date</th>
+                        <th class="px-3 py-2 font-medium">Description</th>
+                        <th class="px-3 py-2 font-medium">Merchant</th>
+                        <th class="px-3 py-2 font-medium">Category</th>
+                        <th class="px-3 py-2 font-medium text-right">Amount</th>
+                        <th class="px-3 py-2 font-medium">Owner</th>
+                        <th class="px-3 py-2 font-medium" title="Tick to remember this Merchant+Category for future imports">Save&nbsp;rule</th>
+                        <th class="px-3 py-2 font-medium">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(t, idx) in preview?.transactions" :key="idx">
+                        <tr class="border-b border-slate-100"
+                            :class="[t.is_duplicate ? 'opacity-60' : '', t.in_intra_file_group ? 'bg-indigo-50' : '', ccSkipped.has(idx) ? 'opacity-40 line-through' : '']">
+                            <td class="px-3 py-2">
+                                <input type="checkbox" :checked="!ccSkipped.has(idx)"
+                                       @change="toggleCc(idx)"
+                                       class="cursor-pointer">
+                            </td>
+                            <td class="px-3 py-2 text-slate-700 whitespace-nowrap" x-text="t.transaction_date"></td>
+                            <td class="px-3 py-2 text-slate-600 truncate max-w-xs" x-text="t.description" :title="t.description"></td>
+
+                            <!-- Merchant: dropdown of existing + "+ Create new" mode -->
+                            <td class="px-3 py-2">
+                                <div class="flex flex-col gap-1">
+                                    <select x-show="!newMerchantNames[idx]"
+                                            x-model="t.merchant_choice"
+                                            @change="onMerchantChange(idx, $event.target.value)"
+                                            class="border border-slate-200 rounded px-1 py-0.5 text-xs bg-white max-w-[14rem]">
+                                        <!-- "suggested" preserves the categorizer's pick (creates merchant if new) -->
+                                        <option value="suggested" x-text="`${t.merchant_name}${t.is_new_merchant ? ' (new)' : ''}`"></option>
+                                        <option value="__new__">+ Create new…</option>
+                                        <template x-for="m in merchants" :key="m.id">
+                                            <option :value="`m:${m.id}`" x-text="m.name"></option>
+                                        </template>
+                                    </select>
+                                    <input x-show="newMerchantNames[idx] !== null && newMerchantNames[idx] !== undefined"
+                                           x-cloak
+                                           type="text" placeholder="New merchant name"
+                                           x-model="newMerchantNames[idx]"
+                                           class="border border-emerald-400 rounded px-1 py-0.5 text-xs bg-emerald-50 max-w-[14rem]">
+                                    <button x-show="newMerchantNames[idx] !== null && newMerchantNames[idx] !== undefined"
+                                            x-cloak
+                                            @click="cancelNewMerchant(idx)"
+                                            type="button"
+                                            class="text-[10px] text-slate-500 hover:text-slate-700 underline self-start">cancel</button>
+                                </div>
+                            </td>
+
+                            <!-- Category: dropdown of existing -->
+                            <td class="px-3 py-2">
+                                <select x-model.number="categoryOverrides[idx]"
+                                        @change="markRowEdited(idx)"
+                                        :class="categoryOverrides[idx] ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200'"
+                                        class="border rounded px-1 py-0.5 text-xs bg-white max-w-[10rem]">
+                                    <option :value="null" x-text="`${t.category_name} (suggested)`"></option>
+                                    <template x-for="c in categories" :key="c.id">
+                                        <option :value="c.id" x-text="`${c.icon ? c.icon + ' ' : ''}${c.name} (${c.type})`"></option>
+                                    </template>
+                                </select>
+                            </td>
+
+                            <td class="px-3 py-2 text-right whitespace-nowrap font-medium"
+                                :class="parseFloat(t.amount) < 0 ? 'text-emerald-700' : 'text-slate-900'"
+                                x-text="formatAmount(t.amount)"></td>
+                            <td class="px-3 py-2">
+                                <select x-model.number="t.owner_user_id"
+                                        :class="t.in_intra_file_group ? 'border-indigo-400' : 'border-slate-200'"
+                                        class="border rounded px-1 py-0.5 text-xs bg-white">
+                                    <template x-for="u in users" :key="u.id">
+                                        <option :value="u.id" x-text="u.name"></option>
+                                    </template>
+                                </select>
+                            </td>
+
+                            <!-- Save rule -->
+                            <td class="px-3 py-2 text-center">
+                                <input type="checkbox"
+                                       :checked="!!saveRuleFlags[idx]"
+                                       :disabled="!rowEdited(idx)"
+                                       @change="saveRuleFlags[idx] = $event.target.checked"
+                                       :title="rowEdited(idx) ? 'Will create a rule from this row' : 'Edit Merchant or Category first'"
+                                       class="cursor-pointer disabled:opacity-30">
+                            </td>
+
+                            <td class="px-3 py-2">
+                                <span x-show="t.is_duplicate" class="inline-block px-2 py-0.5 text-xs bg-amber-100 text-amber-800 rounded">DUP</span>
+                                <span x-show="!t.is_duplicate && t.in_intra_file_group" class="inline-block px-2 py-0.5 text-xs bg-indigo-100 text-indigo-800 rounded">SHARED</span>
+                                <span x-show="!t.is_duplicate && !t.in_intra_file_group && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]" class="inline-block px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded">NEW MERCHANT</span>
+                                <span x-show="!t.is_duplicate && !t.in_intra_file_group && !t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]" class="inline-block px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded">NEW</span>
+                                <span x-show="rowEdited(idx)" class="inline-block px-2 py-0.5 text-xs bg-amber-100 text-amber-900 rounded ml-1">EDITED</span>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- payments (reconciliation only — balance updates come from the checking import) -->
+        <div x-show="preview?.payments.length" class="mt-6">
+            <h4 class="text-sm font-semibold text-slate-700 mb-1">Card payments (for reconciliation — not persisted)</h4>
+            <p class="text-xs text-slate-500 mb-2">
+                These PAYMENT rows are shown so you can sanity-check the card statement against the checking statement
+                (or manual paste) that funded it. The card balance is reduced by the <em>checking</em> import, not here.
+            </p>
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-blue-50 text-blue-900 text-left">
+                        <th class="px-3 py-2 font-medium">Date</th>
+                        <th class="px-3 py-2 font-medium">Description</th>
+                        <th class="px-3 py-2 font-medium text-right">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(p, idx) in preview?.payments" :key="idx">
+                        <tr class="border-b border-slate-100">
+                            <td class="px-3 py-2 text-slate-700 whitespace-nowrap" x-text="p.transaction_date"></td>
+                            <td class="px-3 py-2 text-slate-600" x-text="p.description"></td>
+                            <td class="px-3 py-2 text-right text-blue-700 font-medium" x-text="formatAmount(p.amount)"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- PASTE PARSE ERRORS -->
+    <div x-show="parseErrors.length" x-cloak class="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-6">
+        <div class="text-sm font-semibold text-amber-900 mb-1">
+            <span x-text="parseErrors.length"></span> line(s) didn't parse — fix or remove and re-preview
+        </div>
+        <ul class="text-xs text-amber-900 font-mono space-y-0.5">
+            <template x-for="(err, i) in parseErrors" :key="i">
+                <li x-text="err"></li>
+            </template>
+        </ul>
+    </div>
+
+    <!-- CHECKING PREVIEW -->
+    <div x-show="checkingPreview" x-cloak class="bg-white rounded-lg shadow-sm border border-slate-200 p-8">
+        <div class="flex items-start justify-between mb-6">
+            <div>
+                <h3 class="text-xl font-semibold text-slate-900 mb-1">Checking statement preview</h3>
+                <p class="text-sm text-slate-600">
+                    Parser: <span class="font-medium" x-text="checkingPreview?.parser"></span> ·
+                    Account: <span class="font-medium" x-text="checkingPreview?.payment_method_name"></span>
+                    (<span x-text="checkingPreview?.currency"></span>) ·
+                    Period: <span class="font-medium" x-text="checkingPreview?.period_start"></span> →
+                    <span class="font-medium" x-text="checkingPreview?.period_end"></span>
+                </p>
+            </div>
+            <button @click="commitChecking()"
+                    :disabled="committing"
+                    :class="!committing ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                    class="px-5 py-2.5 rounded-md text-white text-sm font-medium transition-colors">
+                <span x-show="!committing">Commit</span>
+                <span x-show="committing">Saving…</span>
+            </button>
+        </div>
+
+        <!-- summary -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <div class="bg-slate-50 border border-slate-200 rounded-md p-3"
+                 x-show="!checkingPreview?.skip_snapshot">
+                <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">Beginning</div>
+                <div class="text-2xl font-semibold text-slate-900" x-text="formatAmount(checkingPreview?.beginning_balance)"></div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-md p-3"
+                 x-show="!checkingPreview?.skip_snapshot">
+                <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">Ending</div>
+                <div class="text-2xl font-semibold text-slate-900" x-text="formatAmount(checkingPreview?.ending_balance)"></div>
+            </div>
+            <div class="bg-emerald-50 border border-emerald-200 rounded-md p-3 col-span-2"
+                 x-show="!checkingPreview?.skip_snapshot">
+                <div class="text-xs uppercase font-medium text-emerald-700 tracking-wide">Will append snapshot</div>
+                <div class="text-sm text-emerald-900 mt-1">
+                    <span class="font-medium" x-text="checkingPreview?.snapshot_account_name"></span>
+                    on <span class="font-medium" x-text="checkingPreview?.period_end"></span>
+                    = <span class="font-semibold" x-text="formatAmount(checkingPreview?.snapshot_balance)"></span>
+                </div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-md p-3 col-span-2"
+                 x-show="checkingPreview?.skip_snapshot">
+                <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">Snapshot skipped</div>
+                <div class="text-xs text-slate-600 mt-1">
+                    This account opts out of <code>savings_snapshots</code> (parser opt-out). The
+                    printed balance here doesn't reflect a real saved balance — track it manually
+                    via <a href="/savings" class="underline">/savings</a> if you want it counted.
+                </div>
+            </div>
+        </div>
+
+        <!-- salary reconciliation panels -->
+        <template x-for="(a, idx) in (checkingPreview?.activities || []).filter(x => x.salary)" :key="idx">
+            <div class="border rounded-md p-4 mb-4"
+                 :class="a.salary.requires_review ? 'border-rose-300 bg-rose-50' : 'border-amber-300 bg-amber-50'">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <h4 class="text-sm font-semibold text-slate-800">
+                            Salary reconciliation —
+                            <span x-text="a.salary.owner"></span>
+                            <span class="text-slate-500" x-text="`(${a.activity_date})`"></span>
+                        </h4>
+                        <p class="text-xs text-slate-600 mt-1" x-text="a.will_action"></p>
+                    </div>
+                    <span x-show="a.salary.requires_review"
+                          class="text-xs font-medium px-2 py-0.5 rounded bg-rose-200 text-rose-800">⚠ REVIEW</span>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-sm">
+                    <div>
+                        <div class="text-xs text-slate-500">Net deposit</div>
+                        <div class="font-medium text-slate-800" x-text="formatAmount(a.salary.deposit_net)"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500">Expected gross</div>
+                        <div class="font-medium text-slate-800" x-text="formatAmount(a.salary.expected_gross)"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500">Implied withholdings</div>
+                        <div class="font-medium text-slate-800" x-text="formatAmount(a.salary.implied_total_withholdings)"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500">DB total</div>
+                        <div class="font-medium text-slate-800" x-text="formatAmount(a.salary.db_total_withholdings)"></div>
+                    </div>
+                </div>
+                <div x-show="a.salary.proposed_adjustments.length" class="mt-3 text-xs">
+                    <div class="text-slate-500 mb-1">Proposed adjustments:</div>
+                    <ul class="space-y-0.5">
+                        <template x-for="adj in a.salary.proposed_adjustments" :key="adj.transaction_id">
+                            <li class="text-slate-700">
+                                <span x-text="adj.merchant_name"></span>:
+                                <span class="font-mono" x-text="`$${adj.current}`"></span>
+                                →
+                                <span class="font-mono font-medium" x-text="`$${adj.new}`"></span>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+        </template>
+
+        <!-- activities table -->
+        <div class="overflow-x-auto mt-4">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-slate-100 text-slate-700 text-left">
+                        <th class="px-3 py-2 font-medium w-8">
+                            <input type="checkbox" :checked="allChkSelected()"
+                                   @change="toggleAllChk($event.target.checked)"
+                                   title="Toggle all"
+                                   class="cursor-pointer">
+                        </th>
+                        <th class="px-3 py-2 font-medium">Date</th>
+                        <th class="px-3 py-2 font-medium">Description</th>
+                        <th class="px-3 py-2 font-medium">Class</th>
+                        <th class="px-3 py-2 font-medium text-right">Amount</th>
+                        <th class="px-3 py-2 font-medium">Will do</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(a, idx) in checkingPreview?.activities || []" :key="idx">
+                        <tr class="border-b border-slate-100"
+                            :class="[checkingRowClass(a), chkSkipped.has(idx) ? 'opacity-40 line-through' : '']">
+                            <td class="px-3 py-2">
+                                <input type="checkbox" :checked="!chkSkipped.has(idx)"
+                                       @change="toggleChk(idx)"
+                                       class="cursor-pointer">
+                            </td>
+                            <td class="px-3 py-2 text-slate-700 whitespace-nowrap" x-text="a.activity_date"></td>
+                            <td class="px-3 py-2 text-slate-600 truncate max-w-md" :title="a.description">
+                                <span x-text="a.description"></span>
+                                <span x-show="a.transaction_merchant && a.transaction_merchant !== a.description"
+                                      class="block text-xs text-slate-500 mt-0.5">
+                                    → <span x-text="a.transaction_merchant"></span> /
+                                    <span x-text="a.transaction_category"></span>
+                                    <span x-show="a.transaction_is_new_merchant" class="text-purple-700 font-medium">(new)</span>
+                                </span>
+                            </td>
+                            <td class="px-3 py-2">
+                                <span class="inline-block px-1.5 py-0.5 text-xs rounded font-mono"
+                                      :class="checkingClassBadge(a.classification)"
+                                      x-text="a.classification"></span>
+                            </td>
+                            <td class="px-3 py-2 text-right whitespace-nowrap font-medium"
+                                :class="parseFloat(a.amount) > 0 ? 'text-emerald-700' : 'text-slate-900'"
+                                x-text="formatAmount(a.amount)"></td>
+                            <td class="px-3 py-2 text-xs text-slate-600">
+                                <span x-show="!chkContractConvs[idx]" x-text="a.will_action"></span>
+                                <span x-show="chkContractConvs[idx]" class="text-violet-700 font-medium">
+                                    Split <span x-text="chkContractConvs[idx]?.installments"></span>×
+                                    (ends <span x-text="chkContractConvs[idx]?.contract_end_date || '?'"></span>)
+                                </span>
+                                <button x-show="a.classification === 'SPENDING' && !chkSkipped.has(idx)"
+                                        @click="openContractModal(idx)"
+                                        class="ml-2 text-violet-700 hover:text-violet-900 underline text-xs">
+                                    <span x-show="!chkContractConvs[idx]">Split N×</span>
+                                    <span x-show="chkContractConvs[idx]">edit</span>
+                                </button>
+                                <button x-show="chkContractConvs[idx]"
+                                        @click="delete chkContractConvs[idx]"
+                                        class="ml-1 text-slate-500 hover:text-rose-700 text-xs">×</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- CONTRACT SPLIT MODAL -->
+    <div x-show="contractModal.open" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+         @keydown.escape.window="contractModal.open = false">
+        <div class="bg-white rounded-lg shadow-xl border border-slate-200 max-w-md w-full">
+            <div class="px-6 py-4 border-b border-slate-200">
+                <h3 class="text-lg font-semibold text-slate-900">Split into N installments</h3>
+                <p class="text-sm text-slate-600 mt-1">
+                    The bank line is the full upfront payment — only 1/N lands now;
+                    rollover writes 2/N..N/N month by month.
+                </p>
+            </div>
+            <div class="px-6 py-4 space-y-3 text-sm">
+                <div>
+                    <div class="text-xs text-slate-500">Activity</div>
+                    <div class="text-slate-800 font-medium" x-text="contractModal.description"></div>
+                    <div class="text-slate-700"
+                         x-text="`${contractModal.activity_date}  ·  ${formatAmount(contractModal.amount)}`"></div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Installments (N)</label>
+                    <input type="number" min="2" max="36"
+                           x-model.number="contractModal.installments"
+                           class="w-32 border border-slate-300 rounded px-2 py-1 text-sm">
+                    <span class="ml-3 text-xs text-slate-600"
+                          x-text="contractModal.installments > 0 ? `per installment: ${(Math.abs(contractModal.amount) / contractModal.installments).toFixed(2)}` : ''"></span>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Contract end date</label>
+                    <input type="date" x-model="contractModal.contract_end_date"
+                           class="w-44 border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Category (optional override)</label>
+                    <select x-model.number="contractModal.category_id"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option :value="null">(use categorizer match)</option>
+                        <template x-for="c in categories" :key="c.id">
+                            <option :value="c.id" x-text="(c.icon ? c.icon + ' ' : '') + c.name + ' (' + c.type + ')'"></option>
+                        </template>
+                    </select>
+                </div>
+            </div>
+            <div class="px-6 py-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button @click="contractModal.open = false"
+                        class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50">Cancel</button>
+                <button @click="confirmContractModal()"
+                        :disabled="!(contractModal.installments >= 2)"
+                        class="px-3 py-1.5 text-sm rounded-md bg-violet-600 text-white font-medium hover:bg-violet-700 disabled:opacity-50">
+                    Apply
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- RESULT (CC) -->
+    <div x-show="commitResult && commitResult.log_notes === undefined" x-cloak class="bg-emerald-50 border border-emerald-200 rounded-lg p-6 mt-6">
+        <h3 class="text-lg font-semibold text-emerald-900 mb-2">Import committed</h3>
+        <ul class="text-sm text-emerald-900 space-y-1">
+            <li><span class="font-medium" x-text="commitResult?.transactions_created"></span> transactions created</li>
+            <li><span class="font-medium" x-text="commitResult?.duplicates_skipped"></span> duplicates skipped</li>
+            <li><span class="font-medium" x-text="commitResult?.new_merchants_created"></span> new merchants created</li>
+            <li x-show="commitResult?.rules_created > 0"><span class="font-medium" x-text="commitResult?.rules_created"></span> categorization rules created</li>
+        </ul>
+        <div x-show="commitResult?.rules_skipped?.length" class="mt-3 pt-3 border-t border-emerald-200">
+            <div class="text-xs uppercase text-amber-800 font-medium mb-1 tracking-wide">Rules skipped</div>
+            <ul class="text-xs text-amber-900 space-y-0.5">
+                <template x-for="(reason, i) in commitResult?.rules_skipped || []" :key="i">
+                    <li class="font-mono" x-text="reason"></li>
+                </template>
+            </ul>
+        </div>
+    </div>
+
+    <!-- RESULT (Checking) -->
+    <div x-show="commitResult && commitResult.log_notes !== undefined" x-cloak class="bg-emerald-50 border border-emerald-200 rounded-lg p-6 mt-6">
+        <h3 class="text-lg font-semibold text-emerald-900 mb-2">Checking import committed</h3>
+        <div class="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm mb-4">
+            <div>
+                <div class="text-xs text-emerald-700">Transactions</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.transactions_created"></div>
+            </div>
+            <div>
+                <div class="text-xs text-emerald-700">FIXED matched</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.fixed_matched ?? 0"></div>
+            </div>
+            <div>
+                <div class="text-xs text-emerald-700">CC payments applied</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.cc_payments_applied"></div>
+            </div>
+            <div>
+                <div class="text-xs text-emerald-700">CC payments deduped</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.cc_payments_deduped"></div>
+            </div>
+            <div>
+                <div class="text-xs text-emerald-700">Salary adjustments</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.salary_adjustments"></div>
+            </div>
+            <div>
+                <div class="text-xs text-emerald-700">Snapshot</div>
+                <div class="font-medium text-emerald-900" x-text="commitResult?.snapshot_created ? 'created' : 'skipped'"></div>
+            </div>
+        </div>
+        <div x-show="commitResult?.log_notes?.length" class="border-t border-emerald-200 pt-3">
+            <div class="text-xs uppercase text-emerald-700 font-medium mb-1 tracking-wide">Audit log</div>
+            <ul class="text-xs text-emerald-900 space-y-0.5">
+                <template x-for="(note, i) in commitResult?.log_notes || []" :key="i">
+                    <li class="font-mono" x-text="note"></li>
+                </template>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script>
+function importsPage() {
+    return {
+        paymentMethods: [],
+        paymentMethodId: '',
+        users: [],
+        defaultOwnerUserId: null,
+        selectedFile: null,
+        dragover: false,
+        loading: false,
+        committing: false,
+        preview: null,           // CC preview
+        checkingPreview: null,   // bank-checking preview
+        commitResult: null,
+        errorMessage: '',
+        parseErrors: [],         // line-level errors from the paste parser (Phase 18)
+        inputMode: 'file',       // 'file' | 'paste'
+        pasteText: '',
+        pasteDefaultYear: new Date().getFullYear(),
+        pasteDateFormat: 'us',
+        pasteDecimalMark: 'us',
+        ccSkipped: new Set(),    // indices unchecked in the CC preview
+        chkSkipped: new Set(),   // indices unchecked in the checking preview
+        chkContractConvs: {},    // {idx: {installments, contract_end_date, category_id}} per-row contract conversion
+        contractModal: {
+            open: false, index: null, description: '', activity_date: '', amount: 0,
+            installments: 2, contract_end_date: '', category_id: null,
+        },
+        categories: [],
+        merchants: [],
+        // Per-row overrides (CC preview). Index-aligned with preview.transactions.
+        categoryOverrides: [],     // [int|null] — null = keep categorizer's pick
+        merchantOverrides: [],     // [int|null] — int = existing merchant id chosen
+        newMerchantNames: [],      // [str|null] — populated when user picked "+ Create new…"
+        saveRuleFlags: [],         // [bool]    — opt-in per row to remember choice as a rule
+
+        pmIsCc() {
+            const pm = this.paymentMethods.find(x => x.id === this.paymentMethodId);
+            return pm?.type === 'credit_card';
+        },
+
+        // Per-account import guidance, resolved on the server from the parser
+        // specs and this household's own payment methods. Keyed by pm id:
+        // {text, paste_capable}. No institution keyword lives in this file.
+        hints: {{ import_hints | tojson }},
+
+        availablePms() {
+            // File mode: every PM (the per-account hint covers the ones with
+            // no file parser yet).
+            if (this.inputMode !== 'paste') return this.paymentMethods;
+            // Paste mode: only PMs whose parser accepts a paste, and never a
+            // Plaid-fed one: the manual-import endpoint hard-blocks (409) any
+            // PM with a plaid_account_id (its activity comes from
+            // Connections then Review).
+            return this.paymentMethods.filter(pm =>
+                !pm.plaid_account_id && this.hints[pm.id]?.paste_capable
+            );
+        },
+
+        async isCheckingFile() {
+            const name = this.selectedFile?.name || '';
+            if (!name) return false;
+            try {
+                const res = await fetch(`/api/imports/detect?filename=${encodeURIComponent(name)}`);
+                if (!res.ok) return false;
+                const data = await res.json();
+                return data.kind === 'checking';
+            } catch (e) {
+                return false;
+            }
+        },
+
+        toggleCc(idx) {
+            const next = new Set(this.ccSkipped);
+            if (next.has(idx)) next.delete(idx); else next.add(idx);
+            this.ccSkipped = next;
+        },
+        allCcSelected() {
+            return this.preview && this.ccSkipped.size === 0;
+        },
+        toggleAllCc(checked) {
+            if (!this.preview) return;
+            if (checked) {
+                this.ccSkipped = new Set();
+            } else {
+                this.ccSkipped = new Set(this.preview.transactions.map((_, i) => i));
+            }
+        },
+        toggleChk(idx) {
+            const next = new Set(this.chkSkipped);
+            if (next.has(idx)) next.delete(idx); else next.add(idx);
+            this.chkSkipped = next;
+        },
+        allChkSelected() {
+            return this.checkingPreview && this.chkSkipped.size === 0;
+        },
+        toggleAllChk(checked) {
+            if (!this.checkingPreview) return;
+            if (checked) {
+                this.chkSkipped = new Set();
+            } else {
+                this.chkSkipped = new Set((this.checkingPreview.activities || []).map((_, i) => i));
+            }
+        },
+
+        get formatHint() {
+            return this.hints[this.paymentMethodId]?.text || '';
+        },
+
+        async loadPaymentMethods() {
+            try {
+                const res = await fetch('/api/payment-methods');
+                this.paymentMethods = await res.json();
+            } catch (e) {
+                this.errorMessage = 'Failed to load payment methods';
+            }
+        },
+
+        async loadUsers() {
+            try {
+                const res = await fetch('/api/users');
+                this.users = await res.json();
+                if (this.users.length && this.defaultOwnerUserId === null) {
+                    this.defaultOwnerUserId = this.users[0].id;
+                }
+            } catch (e) {
+                this.errorMessage = 'Failed to load users';
+            }
+        },
+
+        canPreview() {
+            if (!this.paymentMethodId) return false;
+            if (this.inputMode === 'file') return !!this.selectedFile;
+            return this.pasteText.trim().length > 0;
+        },
+
+        setMode(mode) {
+            this.inputMode = mode;
+            this.preview = null;
+            this.checkingPreview = null;
+            this.commitResult = null;
+            this.parseErrors = [];
+            this.errorMessage = '';
+            // Drop selected PM if it isn't valid for the new mode (otherwise the
+            // dropdown shows nothing visibly selected while x-model still holds
+            // the old id, which would silently route to a paste endpoint with
+            // a non-paste-capable PM).
+            const available = this.availablePms();
+            if (this.paymentMethodId && !available.some(pm => pm.id === this.paymentMethodId)) {
+                this.paymentMethodId = '';
+            }
+        },
+
+        handleFileChange(e) {
+            this.selectedFile = e.target.files[0] ?? null;
+            this.preview = null;
+            this.checkingPreview = null;
+            this.commitResult = null;
+        },
+
+        handleDrop(e) {
+            this.dragover = false;
+            this.selectedFile = e.dataTransfer.files[0] ?? null;
+            this.preview = null;
+            this.checkingPreview = null;
+            this.commitResult = null;
+        },
+
+        async loadPreview() {
+            if (!this.canPreview()) return;
+            this.loading = true;
+            this.errorMessage = '';
+            this.preview = null;
+            this.checkingPreview = null;
+            this.commitResult = null;
+            this.parseErrors = [];
+            this.ccSkipped = new Set();
+            this.chkSkipped = new Set();
+            this.chkContractConvs = {};
+            this.categoryOverrides = [];
+            this.merchantOverrides = [];
+            this.newMerchantNames = [];
+            this.saveRuleFlags = [];
+
+            if (this.inputMode === 'paste') {
+                // Route to CC paste vs checking paste based on PM type.
+                const ccPaste = this.pmIsCc();
+                const url = ccPaste
+                    ? '/api/imports/paste/preview'
+                    : '/api/imports/checking/paste/preview';
+                const body = ccPaste
+                    ? {payment_method_id: this.paymentMethodId, text: this.pasteText}
+                    : {
+                        payment_method_id: this.paymentMethodId,
+                        text: this.pasteText,
+                        default_year: this.pasteDefaultYear,
+                        date_format: this.pasteDateFormat,
+                        decimal_mark: this.pasteDecimalMark,
+                    };
+                try {
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `HTTP ${res.status}`);
+                    }
+                    const data = await res.json();
+                    this.parseErrors = data.parse_errors || [];
+                    if (ccPaste) {
+                        const cc = data.preview;
+                        const n = (cc.transactions || []).length;
+                        this.categoryOverrides = Array.from({length: n}, () => null);
+                        this.merchantOverrides = Array.from({length: n}, () => null);
+                        this.newMerchantNames = Array.from({length: n}, () => null);
+                        this.saveRuleFlags = Array.from({length: n}, () => false);
+                        (cc.transactions || []).forEach(t => { t.merchant_choice = 'suggested'; });
+                        this.preview = cc;
+                        this.loading = false;
+                        return;
+                    }
+                    this.checkingPreview = data.preview;
+                    // Auto-uncheck DUP rows (preview will skip them at commit anyway,
+                    // visually communicates that no insert will happen).
+                    this.chkSkipped = new Set(
+                        (data.preview.activities || [])
+                            .map((a, i) => (a.is_duplicate ? i : null))
+                            .filter(i => i !== null)
+                    );
+                } catch (e) {
+                    this.errorMessage = e.message;
+                } finally {
+                    this.loading = false;
+                }
+                return;
+            }
+
+            const fd = new FormData();
+            fd.append('file', this.selectedFile);
+            fd.append('payment_method_id', this.paymentMethodId);
+
+            const checking = await this.isCheckingFile();
+            const url = checking ? '/api/imports/checking/preview' : '/api/imports/preview';
+            if (!checking && this.defaultOwnerUserId !== null) {
+                fd.append('default_owner_user_id', this.defaultOwnerUserId);
+            }
+
+            try {
+                const res = await fetch(url, { method: 'POST', body: fd });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                if (checking) {
+                    this.checkingPreview = data;
+                    this.chkSkipped = new Set(
+                        (data.activities || [])
+                            .map((a, i) => (a.is_duplicate ? i : null))
+                            .filter(i => i !== null)
+                    );
+                } else {
+                    // Initialize per-row override arrays (Phase 13).
+                    const n = (data.transactions || []).length;
+                    this.categoryOverrides = Array.from({length: n}, () => null);
+                    this.merchantOverrides = Array.from({length: n}, () => null);
+                    this.newMerchantNames = Array.from({length: n}, () => null);
+                    this.saveRuleFlags = Array.from({length: n}, () => false);
+                    // Seed each row's dropdown state to "suggested".
+                    (data.transactions || []).forEach(t => { t.merchant_choice = 'suggested'; });
+                    this.preview = data;
+                }
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async commitImport() {
+            this.committing = true;
+            this.errorMessage = '';
+
+            // CC paste path — JSON body, no file.
+            if (this.inputMode === 'paste' && this.pmIsCc()) {
+                const body = {
+                    payment_method_id: this.paymentMethodId,
+                    text: this.pasteText,
+                    default_owner_user_id: this.defaultOwnerUserId,
+                };
+                if (this.preview && this.preview.transactions.length) {
+                    body.owner_user_ids = this.preview.transactions.map(t => t.owner_user_id);
+                    if (this.categoryOverrides.some(v => v !== null)) {
+                        body.category_overrides = this.categoryOverrides;
+                    }
+                    if (this.merchantOverrides.some(v => v !== null)) {
+                        body.merchant_overrides = this.merchantOverrides;
+                    }
+                    if (this.newMerchantNames.some(v => v !== null && v !== '')) {
+                        body.new_merchant_names = this.newMerchantNames.map(v => (v && v.trim()) ? v.trim() : null);
+                    }
+                    if (this.saveRuleFlags.some(v => v === true)) {
+                        body.save_rule_flags = this.saveRuleFlags.map(v => !!v);
+                    }
+                }
+                if (this.ccSkipped.size) {
+                    body.skip_indices = [...this.ccSkipped];
+                }
+                try {
+                    const res = await fetch('/api/imports/paste/commit', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `HTTP ${res.status}`);
+                    }
+                    this.commitResult = await res.json();
+                    this.preview = null;
+                } catch (e) {
+                    this.errorMessage = e.message;
+                } finally {
+                    this.committing = false;
+                }
+                return;
+            }
+
+            const fd = new FormData();
+            fd.append('file', this.selectedFile);
+            fd.append('payment_method_id', this.paymentMethodId);
+            if (this.defaultOwnerUserId !== null) {
+                fd.append('default_owner_user_id', this.defaultOwnerUserId);
+            }
+            if (this.preview && this.preview.transactions.length) {
+                const owners = this.preview.transactions.map(t => t.owner_user_id);
+                fd.append('owner_user_ids', JSON.stringify(owners));
+                // Phase 13 — per-row inline overrides. Backend ignores nulls.
+                if (this.categoryOverrides.some(v => v !== null)) {
+                    fd.append('category_overrides', JSON.stringify(this.categoryOverrides));
+                }
+                if (this.merchantOverrides.some(v => v !== null)) {
+                    fd.append('merchant_overrides', JSON.stringify(this.merchantOverrides));
+                }
+                if (this.newMerchantNames.some(v => v !== null && v !== '')) {
+                    // Normalize: empty strings become null so backend doesn't try to create "".
+                    const names = this.newMerchantNames.map(v => (v && v.trim()) ? v.trim() : null);
+                    fd.append('new_merchant_names', JSON.stringify(names));
+                }
+                if (this.saveRuleFlags.some(v => v === true)) {
+                    fd.append('save_rule_flags', JSON.stringify(this.saveRuleFlags.map(v => !!v)));
+                }
+            }
+            if (this.ccSkipped.size) {
+                fd.append('skip_indices', JSON.stringify([...this.ccSkipped]));
+            }
+
+            try {
+                const res = await fetch('/api/imports/commit', { method: 'POST', body: fd });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.commitResult = await res.json();
+                this.preview = null;
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.committing = false;
+            }
+        },
+
+        async loadCategories() {
+            const res = await fetch('/api/categories');
+            this.categories = res.ok ? await res.json() : [];
+        },
+
+        async loadMerchants() {
+            const res = await fetch('/api/merchants?limit=2000');
+            this.merchants = res.ok ? await res.json() : [];
+        },
+
+        // Per-row inline-edit helpers (Phase 13).
+        rowEdited(idx) {
+            return (
+                (this.categoryOverrides[idx] !== null && this.categoryOverrides[idx] !== undefined) ||
+                (this.merchantOverrides[idx] !== null && this.merchantOverrides[idx] !== undefined) ||
+                (this.newMerchantNames[idx] !== null && this.newMerchantNames[idx] !== undefined && this.newMerchantNames[idx] !== '')
+            );
+        },
+        markRowEdited(idx) {
+            // No-op hook: Alpine reactivity recomputes rowEdited(idx) on its own.
+            // Auto-uncheck save-rule flag if the user reverted the override.
+            if (!this.rowEdited(idx)) {
+                this.saveRuleFlags[idx] = false;
+            }
+        },
+        onMerchantChange(idx, value) {
+            if (value === '__new__') {
+                // Pre-fill with the suggested name so the user only edits if needed.
+                this.newMerchantNames[idx] = this.preview.transactions[idx].merchant_name;
+                this.merchantOverrides[idx] = null;
+            } else if (value === 'suggested') {
+                this.merchantOverrides[idx] = null;
+                this.newMerchantNames[idx] = null;
+            } else if (value.startsWith('m:')) {
+                this.merchantOverrides[idx] = parseInt(value.slice(2), 10);
+                this.newMerchantNames[idx] = null;
+            }
+            this.markRowEdited(idx);
+        },
+        cancelNewMerchant(idx) {
+            this.newMerchantNames[idx] = null;
+            this.preview.transactions[idx].merchant_choice = 'suggested';
+            this.markRowEdited(idx);
+        },
+
+        openContractModal(idx) {
+            const a = this.checkingPreview?.activities?.[idx];
+            if (!a) return;
+            const existing = this.chkContractConvs[idx];
+            this.contractModal = {
+                open: true,
+                index: idx,
+                description: a.description,
+                activity_date: a.activity_date,
+                amount: parseFloat(a.amount),
+                installments: existing?.installments ?? 6,
+                contract_end_date: existing?.contract_end_date ?? '',
+                category_id: existing?.category_id ?? null,
+            };
+        },
+
+        confirmContractModal() {
+            const m = this.contractModal;
+            if (!(m.installments >= 2)) return;
+            // Replace, not mutate-in-place: triggers Alpine reactivity for x-show.
+            this.chkContractConvs = {
+                ...this.chkContractConvs,
+                [m.index]: {
+                    installments: m.installments,
+                    contract_end_date: m.contract_end_date || null,
+                    category_id: m.category_id || null,
+                },
+            };
+            this.contractModal.open = false;
+        },
+
+        async commitChecking() {
+            this.committing = true;
+            this.errorMessage = '';
+            const convs = Object.entries(this.chkContractConvs).map(([idx, c]) => ({
+                index: parseInt(idx, 10),
+                installments: c.installments,
+                contract_end_date: c.contract_end_date || null,
+                category_id: c.category_id || null,
+            }));
+            try {
+                let res;
+                if (this.inputMode === 'paste') {
+                    res = await fetch('/api/imports/checking/paste/commit', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            payment_method_id: this.paymentMethodId,
+                            text: this.pasteText,
+                            default_year: this.pasteDefaultYear,
+                            date_format: this.pasteDateFormat,
+                            decimal_mark: this.pasteDecimalMark,
+                            user_id: this.defaultOwnerUserId,
+                            skip_indices: this.chkSkipped.size ? [...this.chkSkipped] : null,
+                            contract_conversions: convs.length ? convs : null,
+                        }),
+                    });
+                } else {
+                    const fd = new FormData();
+                    fd.append('file', this.selectedFile);
+                    fd.append('payment_method_id', this.paymentMethodId);
+                    if (this.defaultOwnerUserId !== null) {
+                        fd.append('user_id', this.defaultOwnerUserId);
+                    }
+                    if (this.chkSkipped.size) {
+                        fd.append('skip_indices', JSON.stringify([...this.chkSkipped]));
+                    }
+                    if (convs.length) {
+                        fd.append('contract_conversions', JSON.stringify(convs));
+                    }
+                    res = await fetch('/api/imports/checking/commit', { method: 'POST', body: fd });
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.commitResult = await res.json();
+                this.checkingPreview = null;
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.committing = false;
+            }
+        },
+
+        reset() {
+            this.preview = null;
+            this.checkingPreview = null;
+            this.commitResult = null;
+            this.selectedFile = null;
+            this.errorMessage = '';
+            this.chkContractConvs = {};
+        },
+
+        formatAmount(amount) {
+            const n = parseFloat(amount ?? 0);
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toFixed(2)}`;
+        },
+
+        checkingClassBadge(cls) {
+            switch (cls) {
+                case 'CC_PAYMENT':         return 'bg-blue-100 text-blue-800';
+                case 'SALARY':             return 'bg-emerald-100 text-emerald-800';
+                case 'TAX_PAYMENT':        return 'bg-rose-100 text-rose-800';
+                case 'INTEREST':           return 'bg-teal-100 text-teal-800';
+                case 'INTERNAL_TRANSFER':  return 'bg-slate-200 text-slate-600';
+                case 'SPENDING':           return 'bg-purple-100 text-purple-800';
+                case 'FIXED_MATCH':        return 'bg-amber-100 text-amber-800';
+                default:                    return 'bg-slate-100 text-slate-700';
+            }
+        },
+
+        checkingRowClass(a) {
+            if (a.is_duplicate) return 'opacity-60 bg-slate-100';
+            if (a.classification === 'INTERNAL_TRANSFER') return 'opacity-60';
+            if (a.classification === 'FIXED_MATCH') return 'opacity-70 bg-amber-50';
+            if (a.cc_payment && a.cc_payment.already_recorded) return 'opacity-60 bg-amber-50';
+            if (a.salary && a.salary.requires_review) return 'bg-rose-50';
+            return '';
+        },
+    }
+}
+</script>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}

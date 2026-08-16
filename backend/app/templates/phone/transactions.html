@@ -1,0 +1,672 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Transactions — {{ app_name }}{% endblock %}
+{% block ptitle %}Transactions{% endblock %}
+
+{% block content %}
+<div x-data="phoneTransactions()" x-init="init()" class="space-y-3">
+
+    <!-- SUMMARY -->
+    <div class="pcard flex items-center justify-between text-sm">
+        <span class="text-slate-600">
+            <span class="font-medium text-slate-800" x-text="result?.total_count ?? 0"></span> row(s)
+        </span>
+        <span class="text-xs text-slate-500 text-right">
+            <template x-for="(s, c) in result?.sum_by_currency || {}" :key="c">
+                <span class="ml-2">
+                    <span class="font-medium" x-text="c"></span>
+                    <span x-text="formatAmount(s)"></span>
+                </span>
+            </template>
+        </span>
+    </div>
+
+    <!-- FILTERS -->
+    <div class="pcard space-y-2">
+        <div class="grid grid-cols-2 gap-2">
+            <select x-model.number="filters.year" @change="reload()"
+                    class="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">Year: All</option>
+                <template x-for="y in years" :key="y">
+                    <option :value="y" x-text="y"></option>
+                </template>
+            </select>
+            <select x-model.number="filters.month" @change="reload()"
+                    class="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">Month: All</option>
+                <template x-for="(name, idx) in monthNames" :key="idx">
+                    <option :value="idx + 1" x-text="name"></option>
+                </template>
+            </select>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+            <select x-model.number="filters.category_id" @change="reload()"
+                    class="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">Category: All</option>
+                <template x-for="c in categories" :key="c.id">
+                    <option :value="c.id" x-text="`${c.icon ? c.icon + ' ' : ''}${c.name} (${c.type})`"></option>
+                </template>
+            </select>
+            <select x-model.number="filters.payment_method_id" @change="reload()"
+                    class="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="">Payment: All</option>
+                <template x-for="pm in paymentMethods" :key="pm.id">
+                    <option :value="pm.id" x-text="`${pm.name} (${pm.currency})`"></option>
+                </template>
+            </select>
+        </div>
+        <div class="flex items-center gap-2">
+            <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs bg-white">
+                <template x-for="f in [{v:'', l:'All'}, {v:'USD', l:'USD'}, {v:'BRL', l:'BRL'}]" :key="f.v">
+                    <button type="button" @click="filters.currency = f.v; reload()"
+                            :class="filters.currency === f.v ? 'bg-slate-700 text-white' : 'text-slate-600'"
+                            class="px-3 py-2 border-l border-slate-300 first:border-l-0" x-text="f.l"></button>
+                </template>
+            </div>
+            <input type="text" x-model="filters.search" @input.debounce.400ms="reload()"
+                   placeholder="merchant or description"
+                   class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+            <button @click="resetFilters()" class="text-slate-600 underline">Reset filters</button>
+            <span x-show="loading" class="text-slate-400">Loading…</span>
+            <span x-show="errorMessage" class="text-rose-600" x-text="errorMessage"></span>
+        </div>
+    </div>
+
+    <!-- LIST -->
+    <div class="pcard">
+        <template x-for="t in visibleRows()" :key="t.id">
+            <div>
+                <div class="prow" @click="expanded = expanded === t.id ? null : t.id">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full shrink-0" :style="`background:${t.category_color}`"></span>
+                    <span class="grow min-w-0">
+                        <span class="flex items-center gap-1">
+                            <span class="text-sm font-medium text-slate-800 truncate" x-text="t.merchant_name"></span>
+                            <template x-if="t.recurrence_kind">
+                                <span class="shrink-0 px-1.5 py-0.5 text-[10px] rounded font-medium font-mono"
+                                      :class="kindBadgeClass(t.recurrence_kind)"
+                                      x-text="kindBadgeLabel(t.recurrence_kind)"></span>
+                            </template>
+                            <template x-if="t.installment_total > 1">
+                                <span class="shrink-0 px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-800 font-medium"
+                                      x-text="`${t.installment_current}/${t.installment_total}`"></span>
+                            </template>
+                        </span>
+                        <span class="block text-xs text-slate-500 truncate"
+                              x-text="t.transaction_date + ' · ' + (t.category_icon ? t.category_icon + ' ' : '') + t.category_name + ' · ' + t.payment_method_name"></span>
+                        <span x-show="t.description" class="block text-xs text-slate-400 truncate" x-text="t.description"></span>
+                    </span>
+                    <span class="text-sm font-medium whitespace-nowrap shrink-0"
+                          :class="parseFloat(t.amount) < 0 ? 'text-emerald-700' : 'text-slate-900'">
+                        <span x-text="formatAmount(t.amount)"></span>
+                        <span class="text-xs text-slate-400" x-text="t.currency"></span>
+                    </span>
+                </div>
+                <div x-show="expanded === t.id" x-cloak class="flex flex-wrap items-center gap-2 py-2 pl-6">
+                    <span x-show="t.installment_total > 1 && t.installment_value" class="w-full text-xs text-slate-500"
+                          x-text="'per installment: ' + formatAmount(t.installment_value) + (t.contract_end_date ? ' · ends ' + t.contract_end_date : '')"></span>
+                    <button @click="startEdit(t)" class="text-xs border border-blue-300 text-blue-700 rounded px-3 py-1.5">Edit</button>
+                    <button x-show="t.installment_total === 1" @click="askSplit(t)"
+                            class="text-xs border border-amber-300 text-amber-700 rounded px-3 py-1.5">Split</button>
+                    <button @click="doDelete(t)" class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
+                </div>
+            </div>
+        </template>
+        <div x-show="!loading && (result?.transactions || []).length === 0" class="py-6 text-center text-slate-400 text-sm">
+            No transactions match these filters.
+        </div>
+        <div x-show="remainingRows() > 0" class="pt-3 text-center">
+            <button @click="showMore()"
+                    class="w-full border border-slate-300 text-slate-700 rounded-lg px-3 py-2 text-sm font-medium"
+                    x-text="`Load more (${remainingRows()} remaining)`"></button>
+            <div class="mt-1 text-xs text-slate-400">
+                Showing <span x-text="visibleRows().length"></span>
+                of <span x-text="(result?.transactions || []).length"></span> rows
+            </div>
+        </div>
+    </div>
+
+    <!-- EDIT SHEET. x-if, not x-show: the inputs bind editing.* and would
+         throw on every load while editing is null (desktop uses x-if too). -->
+    <template x-if="editing">
+    <div>
+        <div class="psheet-backdrop" @click="cancelEdit()"></div>
+        <div class="psheet space-y-2">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900">Edit transaction</div>
+                <button @click="cancelEdit()" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+            <input type="date" x-model="editing.transaction_date"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
+            <select @change="editing.merchant_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <template x-for="m in merchants" :key="m.id">
+                    <option :value="m.id" :selected="m.id === editing.merchant_id" x-text="m.name"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
+            <select @change="editing.category_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <template x-for="c in categories" :key="c.id">
+                    <option :value="c.id" :selected="c.id === editing.category_id" x-text="(c.icon ? c.icon + ' ' : '') + c.name"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Payment Method</label>
+            <select @change="editing.payment_method_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <template x-for="pm in paymentMethods" :key="pm.id">
+                    <option :value="pm.id" :selected="pm.id === editing.payment_method_id" x-text="`${pm.name} (${pm.currency})`"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Description</label>
+            <input type="text" x-model="editing.description"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+
+            <div class="flex items-end gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Installment</label>
+                    <div class="flex items-center gap-1">
+                        <input type="number" min="1" x-model.number="editing.installment_current"
+                               title="Current installment"
+                               class="w-14 border border-slate-300 rounded px-1 py-2 text-sm text-center">
+                        <span class="text-slate-400 text-xs">/</span>
+                        <input type="number" min="1" x-model.number="editing.installment_total"
+                               title="Total installments"
+                               class="w-14 border border-slate-300 rounded px-1 py-2 text-sm text-center">
+                    </div>
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Amount</label>
+                    <input type="number" step="0.01" x-model.number="editing.amount"
+                           class="w-full border border-slate-300 rounded px-3 py-2 text-sm text-right">
+                </div>
+            </div>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+            <select x-model="editing.recurrence_kind"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">(none)</option>
+                <option value="INDEFINITE">Indefinite</option>
+                <option value="CONTRACT">Contract</option>
+                <option value="INSTALLMENT">Installment</option>
+                <option value="EXTRA_PRINCIPAL">Extra Principal</option>
+            </select>
+            <div x-show="editing.recurrence_kind === 'CONTRACT'">
+                <label class="block text-xs font-medium text-slate-600 mb-1">Contract ends</label>
+                <input type="date" x-model="editing.contract_end_date"
+                       class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+            </div>
+
+            <p x-show="errorMessage" class="text-sm text-rose-600" x-text="errorMessage"></p>
+            <button @click="saveEdit()" :disabled="saving"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium bg-emerald-600 disabled:opacity-50">
+                <span x-show="!saving">Save</span>
+                <span x-show="saving">Saving…</span>
+            </button>
+            <button @click="cancelEdit()" class="w-full text-center text-sm text-slate-600 py-1">Cancel</button>
+        </div>
+    </div>
+    </template>
+
+    <!-- SPLIT SHEET -->
+    <div x-show="splitTarget" x-cloak>
+        <div class="psheet-backdrop" @click="splitTarget = null; splitError = ''"></div>
+        <div class="psheet space-y-2">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900">Split into installments</div>
+                <button @click="splitTarget = null; splitError = ''" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+            <p class="text-sm text-slate-600">
+                <span x-text="splitTarget?.transaction_date"></span> ·
+                <span class="font-medium" x-text="splitTarget?.merchant_name"></span> ·
+                <span x-text="formatAmount(splitTarget?.amount)"></span>
+                <span class="text-xs text-slate-400" x-text="splitTarget?.currency"></span>
+            </p>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Number of installments</label>
+            <input type="number" min="2" max="36" x-model.number="splitN"
+                   class="w-24 border border-slate-300 rounded-md px-2 py-2 text-sm">
+            <p class="text-xs text-slate-500" x-show="splitN >= 2 && splitTarget">
+                Each installment ≈
+                <span class="font-medium" x-text="formatAmount((parseFloat(splitTarget?.amount || 0) / splitN).toFixed(2))"></span>.
+                <span x-show="splitN > 1">A new row will be created in each of the next
+                    <span x-text="splitN - 1"></span> months (same day, clamped to month-end).</span>
+            </p>
+            <p x-show="splitError" class="text-sm text-rose-600" x-text="splitError"></p>
+            <button @click="doSplit()" :disabled="splitting || splitN < 2"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium bg-amber-600 disabled:opacity-50">
+                <span x-show="!splitting">Split</span>
+                <span x-show="splitting">Splitting…</span>
+            </button>
+            <button @click="splitTarget = null; splitError = ''" class="w-full text-center text-sm text-slate-600 py-1">Cancel</button>
+        </div>
+    </div>
+
+    <!-- CREATE SHEET -->
+    <div x-show="creating" x-cloak>
+        <div class="psheet-backdrop" @click="creating = false; createError = ''"></div>
+        <div class="psheet space-y-2">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900">Add transaction</div>
+                <button @click="creating = false; createError = ''" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
+            <input type="date" x-model="newTxn.transaction_date"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">
+                Amount
+                <span class="ml-1 text-slate-400 font-normal" x-text="newTxnCurrency() ? '(' + newTxnCurrency() + ')' : ''"></span>
+            </label>
+            <input type="number" step="0.01" x-model.number="newTxn.amount"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm text-right">
+            <p x-show="newTxn.installment_total > 1 && newTxn.amount > 0" class="text-xs text-slate-500">
+                Will split as <span class="font-medium"
+                    x-text="(parseFloat(newTxn.amount || 0) / newTxn.installment_total).toFixed(2)"></span>
+                × <span x-text="newTxn.installment_total"></span> months
+            </p>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
+            <select @change="newTxn.merchant_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">Select…</option>
+                <template x-for="m in merchants" :key="m.id">
+                    <option :value="m.id" :selected="m.id === newTxn.merchant_id" x-text="m.name"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
+            <select @change="newTxn.category_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">Select…</option>
+                <template x-for="c in categories" :key="c.id">
+                    <option :value="c.id" :selected="c.id === newTxn.category_id" x-text="c.name + ' (' + c.type + ')'"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Payment</label>
+            <select @change="newTxn.payment_method_id = parseInt($event.target.value)"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">Select…</option>
+                <template x-for="pm in paymentMethods" :key="pm.id">
+                    <option :value="pm.id" :selected="pm.id === newTxn.payment_method_id" x-text="pm.name + ' (' + pm.currency + ')'"></option>
+                </template>
+            </select>
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Description</label>
+            <input type="text" x-model="newTxn.description"
+                   placeholder="e.g. cash / bank transfer / what was bought"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+
+            <label class="block text-xs font-medium text-slate-600 mb-1">Owner</label>
+            <select @change="newTxn.owner_user_id = parseInt($event.target.value) || null"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">(none)</option>
+                <template x-for="u in users" :key="u.id">
+                    <option :value="u.id" :selected="u.id === newTxn.owner_user_id" x-text="u.name"></option>
+                </template>
+            </select>
+
+            <div class="flex items-end gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Installment</label>
+                    <div class="flex items-center gap-1">
+                        <input type="number" min="1" x-model.number="newTxn.installment_current"
+                               class="w-14 border border-slate-300 rounded px-1 py-2 text-sm text-center">
+                        <span class="text-slate-400 text-xs">/</span>
+                        <input type="number" min="1" x-model.number="newTxn.installment_total"
+                               class="w-14 border border-slate-300 rounded px-1 py-2 text-sm text-center">
+                    </div>
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+                    <select x-model="newTxn.recurrence_kind"
+                            class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                        <option value="">(none)</option>
+                        <option value="INDEFINITE">Indefinite</option>
+                        <option value="CONTRACT">Contract</option>
+                        <option value="INSTALLMENT">Installment</option>
+                        <option value="EXTRA_PRINCIPAL">Extra Principal (car loan)</option>
+                    </select>
+                </div>
+            </div>
+            <div x-show="newTxn.recurrence_kind === 'CONTRACT'">
+                <label class="block text-xs font-medium text-slate-600 mb-1">Contract ends</label>
+                <input type="date" x-model="newTxn.contract_end_date"
+                       class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+            </div>
+
+            <p x-show="createError" class="text-sm text-rose-600" x-text="createError"></p>
+            <button @click="doCreate()" :disabled="creatingBusy || !canCreate()"
+                    :class="canCreate() && !creatingBusy ? 'bg-emerald-600' : 'bg-slate-300 cursor-not-allowed'"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium">
+                <span x-show="!creatingBusy">Create</span>
+                <span x-show="creatingBusy">Saving…</span>
+            </button>
+            <button @click="creating = false; createError = ''" class="w-full text-center text-sm text-slate-600 py-1">Cancel</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<!-- Outside the page's x-data scope, so it talks to it via a window event. -->
+<button class="pfab" x-data @click="window.dispatchEvent(new CustomEvent('open-new-transaction'))" title="Add transaction">+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Rows revealed per "Load more" tap. The list is rendered incrementally
+// because the API has no pagination: a full year is ~700 rows and growing,
+// and rendering all of them costs a 35k-pixel page on every filter change.
+const ROW_PAGE = 100;
+
+function phoneTransactions() {
+    const today = new Date();
+    return {
+        filters: {
+            year: '',
+            month: '',
+            category_id: '',
+            payment_method_id: '',
+            currency: '',
+            search: '',
+        },
+        years: [],
+        monthNames: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        categories: [],
+        merchants: [],
+        paymentMethods: [],
+        users: [],
+        result: null,
+        visibleCount: ROW_PAGE,
+        loading: false,
+        saving: false,
+        editing: null,
+        expanded: null,
+        splitTarget: null,
+        splitN: 2,
+        splitting: false,
+        splitError: '',
+        creating: false,
+        creatingBusy: false,
+        createError: '',
+        newTxn: {},
+        errorMessage: '',
+
+        async init() {
+            const y = today.getFullYear();
+            this.years = [y - 2, y - 1, y, y + 1];
+            window.addEventListener('open-new-transaction', () => { this.openCreate(); });
+            await Promise.all([
+                this.loadCategories(),
+                this.loadMerchants(),
+                this.loadPaymentMethods(),
+                this.loadUsers(),
+            ]);
+            await this.reload();
+        },
+
+        async loadUsers() {
+            const res = await fetch('/api/users');
+            this.users = await res.json();
+        },
+
+        openCreate() {
+            this.newTxn = {
+                transaction_date: today.toISOString().slice(0, 10),
+                merchant_id: null,
+                category_id: null,
+                payment_method_id: null,
+                amount: null,
+                description: '',
+                owner_user_id: this.users[0]?.id ?? null,
+                installment_current: 1,
+                installment_total: 1,
+                recurrence_kind: '',
+                contract_end_date: '',
+            };
+            this.createError = '';
+            this.creating = true;
+        },
+
+        kindBadgeLabel(kind) {
+            return {
+                INDEFINITE: 'IND',
+                CONTRACT: 'CTR',
+                INSTALLMENT: 'INS',
+                EXTRA_PRINCIPAL: 'EXTRA',
+            }[kind] || kind;
+        },
+        kindBadgeClass(kind) {
+            return {
+                INDEFINITE: 'bg-slate-100 text-slate-700',
+                CONTRACT: 'bg-violet-100 text-violet-700',
+                INSTALLMENT: 'bg-sky-100 text-sky-700',
+                EXTRA_PRINCIPAL: 'bg-emerald-100 text-emerald-700',
+            }[kind] || 'bg-slate-100 text-slate-700';
+        },
+
+        canCreate() {
+            const t = this.newTxn;
+            return t.transaction_date && t.merchant_id && t.category_id
+                && t.payment_method_id && t.amount !== null && t.amount !== '';
+        },
+
+        newTxnCurrency() {
+            const pm = this.paymentMethods.find(x => x.id === this.newTxn?.payment_method_id);
+            return pm ? pm.currency : '';
+        },
+
+        async doCreate() {
+            if (!this.canCreate()) return;
+            this.creatingBusy = true;
+            this.createError = '';
+            try {
+                // Strip empty strings so the API gets nulls.
+                const payload = {...this.newTxn};
+                if (!payload.recurrence_kind) payload.recurrence_kind = null;
+                if (!payload.contract_end_date) payload.contract_end_date = null;
+                const res = await fetch('/api/transactions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.creating = false;
+                await this.reload(false);
+            } catch (e) {
+                this.createError = e.message;
+            } finally {
+                this.creatingBusy = false;
+            }
+        },
+
+        async loadCategories() {
+            const res = await fetch('/api/categories');
+            this.categories = await res.json();
+        },
+        async loadMerchants() {
+            const res = await fetch('/api/merchants?limit=1000');
+            this.merchants = await res.json();
+        },
+        async loadPaymentMethods() {
+            const res = await fetch('/api/payment-methods?active_only=false');
+            this.paymentMethods = await res.json();
+        },
+
+        buildQuery() {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(this.filters)) {
+                if (v !== '' && v !== null && v !== undefined) {
+                    params.set(k, v);
+                }
+            }
+            return params.toString();
+        },
+
+        async reload(resetWindow = true) {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch('/api/transactions?' + this.buildQuery());
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.result = await res.json();
+                if (resetWindow) this.visibleCount = ROW_PAGE;
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        // The API returns the whole filtered set (row count and totals in the
+        // summary card are computed over it); only the rendering is windowed.
+        visibleRows() {
+            return (this.result?.transactions || []).slice(0, this.visibleCount);
+        },
+
+        remainingRows() {
+            return Math.max(0, (this.result?.transactions || []).length - this.visibleCount);
+        },
+
+        showMore() {
+            this.visibleCount += ROW_PAGE;
+        },
+
+        resetFilters() {
+            this.filters = {
+                year: '', month: '', category_id: '', payment_method_id: '',
+                currency: '', search: '',
+            };
+            this.reload();
+        },
+
+        startEdit(t) {
+            this.editing = {
+                id: t.id,
+                transaction_date: t.transaction_date,
+                merchant_id: t.merchant_id,
+                category_id: t.category_id,
+                payment_method_id: t.payment_method_id,
+                amount: parseFloat(t.amount),
+                description: t.description || '',
+                installment_current: t.installment_current,
+                installment_total: t.installment_total,
+                recurrence_kind: t.recurrence_kind || '',
+                contract_end_date: t.contract_end_date || '',
+            };
+            this.expanded = null;
+        },
+
+        cancelEdit() {
+            this.editing = null;
+        },
+
+        async saveEdit() {
+            if (!this.editing) return;
+            this.saving = true;
+            this.errorMessage = '';
+            try {
+                const patch = {
+                    transaction_date: this.editing.transaction_date,
+                    merchant_id: this.editing.merchant_id,
+                    category_id: this.editing.category_id,
+                    payment_method_id: this.editing.payment_method_id,
+                    amount: this.editing.amount,
+                    description: this.editing.description,
+                    installment_current: this.editing.installment_current,
+                    installment_total: this.editing.installment_total,
+                    recurrence_kind: this.editing.recurrence_kind || null,
+                };
+                if (this.editing.recurrence_kind === 'CONTRACT' && this.editing.contract_end_date) {
+                    patch.contract_end_date = this.editing.contract_end_date;
+                } else {
+                    patch.clear_contract_end_date = true;
+                }
+                const res = await fetch(`/api/transactions/${this.editing.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(patch),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.editing = null;
+                await this.reload(false);
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        askSplit(t) {
+            this.splitTarget = t;
+            this.splitN = 2;
+            this.splitError = '';
+            this.expanded = null;
+        },
+
+        async doSplit() {
+            if (!this.splitTarget || this.splitN < 2) return;
+            this.splitting = true;
+            this.splitError = '';
+            try {
+                const res = await fetch(`/api/transactions/${this.splitTarget.id}/split`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({installments: this.splitN}),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.splitTarget = null;
+                await this.reload(false);
+            } catch (e) {
+                this.splitError = e.message;
+            } finally {
+                this.splitting = false;
+            }
+        },
+
+        async doDelete(t) {
+            if (!confirm(`Delete ${t.merchant_name} · ${this.formatAmount(t.amount)} ${t.currency}? This cannot be undone.`)) return;
+            this.errorMessage = '';
+            try {
+                const res = await fetch(`/api/transactions/${t.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.expanded = null;
+                await this.reload(false);
+            } catch (e) {
+                this.errorMessage = e.message;
+            }
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === '') return '';
+            const n = parseFloat(amount);
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toFixed(2)}`;
+        },
+    }
+}
+</script>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

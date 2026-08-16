@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+
+{% block title %}Warnings — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="warningsPage()" x-init="init()" class="space-y-6">
+
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 px-6 py-4">
+        <h2 class="text-2xl font-semibold text-slate-900">⚠ Warnings</h2>
+        <p class="text-sm text-slate-600 mt-1">
+            Projected balance per checking account (next 14 days) and contracts / installments ending.
+            Alerts use each card's <em>paid_from</em> link to project the autopay.
+        </p>
+    </div>
+
+    <!-- SETUP: CC paid_from links -->
+    <div x-show="cardsNeedingSetup.length > 0" x-cloak
+         class="bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <div class="flex items-start justify-between gap-3">
+            <div>
+                <div class="font-semibold text-amber-900">Configure CC autopay sources</div>
+                <p class="text-sm text-amber-900 mt-1">
+                    Without this, the forecast ignores autopays for the cards below.
+                </p>
+            </div>
+        </div>
+        <table class="w-full text-sm mt-3">
+            <thead class="text-left text-amber-900">
+                <tr>
+                    <th class="py-1.5">Card</th>
+                    <th class="py-1.5">Pays from</th>
+                    <th class="py-1.5 w-32"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="card in cardsNeedingSetup" :key="card.id">
+                    <tr class="border-t border-amber-200">
+                        <td class="py-1.5 font-medium" x-text="`${card.name} (${card.currency})`"></td>
+                        <td class="py-1.5">
+                            <select x-model.number="setupChoice[card.id]"
+                                    class="border border-amber-300 rounded px-2 py-1 text-xs bg-white">
+                                <option :value="0">— select —</option>
+                                <template x-for="ck in checkings" :key="ck.id">
+                                    <option :value="ck.id" x-text="ck.name"></option>
+                                </template>
+                            </select>
+                        </td>
+                        <td class="py-1.5 text-right">
+                            <button @click="saveSetup(card.id)"
+                                    :disabled="!setupChoice[card.id]"
+                                    :class="setupChoice[card.id] ? 'bg-amber-600 hover:bg-amber-700' : 'bg-slate-300 cursor-not-allowed'"
+                                    class="px-3 py-1 rounded text-white text-xs">Save</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- STATEMENT ALERTS (close/due) -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                Statement &amp; payment alerts
+            </h3>
+            <span class="text-xs text-slate-500" x-show="statementAlerts !== null"
+                  x-text="`${statementAlerts?.length || 0} alerts`"></span>
+        </div>
+        <div x-show="statementAlerts === null" class="text-sm text-slate-500 py-3">Loading…</div>
+        <ul class="divide-y divide-slate-200/60">
+            <template x-for="a in statementAlerts || []" :key="`${a.payment_method_id}-${a.kind}`">
+                <li class="py-2 flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium"
+                                  :class="a.severity === 'high' ? 'bg-rose-100 text-rose-800'
+                                          : a.severity === 'medium' ? 'bg-amber-100 text-amber-900'
+                                          : 'bg-emerald-100 text-emerald-800'"
+                                  x-text="a.kind === 'statement_closed' ? '📥 import'
+                                          : a.kind === 'due_soon' ? '💳 pay'
+                                          : '⏳ closing'"></span>
+                            <span class="text-sm font-medium text-slate-900" x-text="a.payment_method_name"></span>
+                            <span class="text-xs text-slate-500"
+                                  x-text="a.kind.replace('_', ' ')"></span>
+                        </div>
+                        <div class="text-xs text-slate-600 mt-0.5" x-text="a.message"></div>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="text-xs text-slate-500" x-text="a.target_date"></div>
+                        <a :href="a.kind === 'statement_closed' ? '/imports' : '/debts'"
+                           class="text-xs text-blue-600 hover:underline"
+                           x-text="a.kind === 'statement_closed' ? 'import ↗' : 'view ↗'"></a>
+                    </div>
+                </li>
+            </template>
+            <li x-show="statementAlerts !== null && statementAlerts.length === 0" class="text-sm text-slate-500 py-6 text-center">
+                No pending statements or upcoming dues. Set <em>statement_close_day</em> below to enable.
+            </li>
+        </ul>
+    </div>
+
+    <!-- OVERDRAFT FORECAST -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                Overdraft forecast (next 14 days)
+            </h3>
+            <span class="text-xs text-slate-500" x-show="overdrafts !== null"
+                  x-text="`${overdrafts?.length || 0} accounts`"></span>
+        </div>
+        <div x-show="overdrafts === null" class="text-sm text-slate-500 py-3">Loading…</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <template x-for="f in overdrafts || []" :key="f.checking_id">
+                <div class="rounded-md border p-3"
+                     :class="parseFloat(f.deficit) > 0 ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-slate-50'">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <div class="font-medium text-slate-900" x-text="f.checking_name"></div>
+                            <div class="text-xs text-slate-500">
+                                <span x-text="`${formatAmount(f.current_balance)} ${f.currency}`"></span>
+                                <span class="mx-1">·</span>
+                                <span class="text-rose-700" x-text="`-${formatAmount(f.projected_debits)}`"></span>
+                                <span class="mx-1">·</span>
+                                <span class="text-emerald-700" x-text="`+${formatAmount(f.projected_incomes)}`"></span>
+                                <span class="mx-1">→</span>
+                                <span :class="parseFloat(f.projected_balance) < 0 ? 'text-rose-700 font-semibold' : 'text-slate-700 font-medium'"
+                                      x-text="`${formatAmount(f.projected_balance)} ${f.currency}`"></span>
+                            </div>
+                            <div x-show="f.projected_balance_usd !== null" class="text-[10px] text-slate-400 mt-0.5">
+                                ≈ <span x-text="`${formatAmount(f.current_balance_usd)} USD`"></span>
+                                <span class="mx-0.5">·</span>
+                                <span x-text="`-${formatAmount(f.projected_debits_usd)}`"></span>
+                                <span class="mx-0.5">·</span>
+                                <span x-text="`+${formatAmount(f.projected_incomes_usd)}`"></span>
+                                <span class="mx-0.5">→</span>
+                                <span x-text="`${formatAmount(f.projected_balance_usd)} USD`"></span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div x-show="parseFloat(f.deficit) > 0"
+                                 class="text-sm font-semibold text-rose-700"
+                                 x-text="`-${formatAmount(f.deficit)} ${f.currency}`"></div>
+                            <div class="text-xs text-slate-500"
+                                 x-show="f.min_balance_date"
+                                 x-text="`worst on ${f.min_balance_date}`"></div>
+                            <div x-show="!f.has_cc_links" class="text-[10px] text-amber-700 mt-1" title="No CC linked → forecast may be incomplete">⚠ no CC links</div>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <button @click="toggleExpand(f.checking_id)"
+                                class="text-xs text-blue-600 hover:underline"
+                                x-text="expanded[f.checking_id] ? 'hide schedule' : `schedule (${f.events.length})`"></button>
+                        <ul x-show="expanded[f.checking_id]" x-cloak
+                            class="mt-2 text-xs space-y-0.5 font-mono">
+                            <template x-for="(e, i) in f.events" :key="i">
+                                <li class="flex justify-between border-b border-slate-200/50 py-0.5">
+                                    <span x-text="`${e.event_date}  ·  ${e.source}`"></span>
+                                    <span :class="e.source_type === 'income' ? 'text-emerald-700' : (e.source_type === 'cc_autopay' ? 'text-blue-700' : 'text-slate-700')">
+                                        <span x-text="`${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount)} ${f.currency}`"></span>
+                                        <span x-show="e.amount_usd !== null" class="text-slate-400"
+                                              x-text="`(≈${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount_usd)} USD)`"></span>
+                                    </span>
+                                </li>
+                            </template>
+                            <li x-show="f.events.length === 0" class="text-slate-400 italic">No projected events.</li>
+                        </ul>
+                    </div>
+                </div>
+            </template>
+            <div x-show="overdrafts !== null && overdrafts.length === 0" class="col-span-full text-sm text-slate-500 py-6 text-center">
+                No active checking accounts.
+            </div>
+        </div>
+    </div>
+
+    <!-- STATEMENT DATES (close + due day per active CC / checking) -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                Statement dates
+            </h3>
+            <span class="text-xs text-slate-500" x-text="`${cards.length + checkings.length} accounts`"></span>
+        </div>
+        <table class="w-full text-sm">
+            <thead class="text-xs uppercase text-slate-500">
+                <tr class="border-b border-slate-200">
+                    <th class="text-left py-1.5">Account</th>
+                    <th class="text-left py-1.5">Type</th>
+                    <th class="text-right py-1.5 w-24">Close day</th>
+                    <th class="text-right py-1.5 w-24">Due day</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="pm in [...cards, ...checkings].sort((a,b) => a.name.localeCompare(b.name))" :key="pm.id">
+                    <tr class="border-b border-slate-100">
+                        <td class="py-1.5 font-medium text-slate-900" x-text="pm.name"></td>
+                        <td class="py-1.5 text-xs text-slate-500" x-text="`${pm.type} · ${pm.currency}`"></td>
+                        <td class="py-1.5 text-right" x-text="pm.statement_close_day || '—'"
+                            :class="pm.statement_close_day ? 'text-slate-700' : 'text-slate-400'"></td>
+                        <td class="py-1.5 text-right" x-text="pm.due_day || '—'"
+                            :class="pm.due_day ? 'text-slate-700' : 'text-slate-400'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <p class="text-[10px] text-slate-400 mt-2">
+            Populated automatically when a statement with a recognized header is imported. Manual override via API.
+        </p>
+    </div>
+
+    <!-- EXPIRING CONTRACTS / INSTALLMENTS -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                Contracts / installments ending (next 90 days)
+            </h3>
+            <span class="text-xs text-slate-500" x-show="expiring !== null"
+                  x-text="`${expiring?.length || 0} items`"></span>
+        </div>
+        <div x-show="expiring === null" class="text-sm text-slate-500 py-3">Loading…</div>
+        <ul class="divide-y divide-slate-200/60">
+            <template x-for="e in expiring || []" :key="e.transaction_id">
+                <li class="py-2 flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium"
+                                  :class="e.severity === 'high' ? 'bg-rose-100 text-rose-800' : e.severity === 'medium' ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'"
+                                  x-text="e.severity === 'high' ? '🔴' : e.severity === 'medium' ? '🟡' : '🟢'"></span>
+                            <span class="text-sm font-medium text-slate-900" x-text="e.merchant_name"></span>
+                            <span class="text-xs text-slate-500" x-text="`(${e.recurrence_kind.toLowerCase()})`"></span>
+                        </div>
+                        <div class="text-xs text-slate-500 mt-0.5" x-text="`${e.category_name} · ${e.payment_method_name} · ${e.detail}`"></div>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="text-sm font-medium text-slate-900" x-text="`${formatAmount(e.amount)} ${e.currency}`"></div>
+                        <a :href="`/transactions?id=${e.transaction_id}`" class="text-xs text-blue-600 hover:underline">view ↗</a>
+                    </div>
+                </li>
+            </template>
+            <li x-show="expiring !== null && expiring.length === 0" class="text-sm text-slate-500 py-6 text-center">
+                No contracts / installments ending in the next 90 days.
+            </li>
+        </ul>
+    </div>
+</div>
+
+<script>
+function warningsPage() {
+    return {
+        overdrafts: null,
+        expiring: null,
+        statementAlerts: null,
+        expanded: {},
+        cards: [],
+        checkings: [],
+        cardsNeedingSetup: [],
+        setupChoice: {},
+
+        async init() {
+            await Promise.all([
+                this.loadOverdraft(),
+                this.loadExpiring(),
+                this.loadPaymentMethods(),
+                this.loadStatementAlerts(),
+            ]);
+        },
+
+        async loadStatementAlerts() {
+            try {
+                const r = await fetch('/api/warnings/statements');
+                this.statementAlerts = await r.json();
+            } catch (e) {
+                this.statementAlerts = [];
+            }
+        },
+
+        async loadOverdraft() {
+            try {
+                const r = await fetch('/api/warnings/overdraft?horizon_days=14');
+                this.overdrafts = await r.json();
+            } catch (e) {
+                this.overdrafts = [];
+            }
+        },
+        async loadExpiring() {
+            try {
+                const r = await fetch('/api/warnings/expiring?horizon_days=90');
+                this.expiring = await r.json();
+            } catch (e) {
+                this.expiring = [];
+            }
+        },
+        async loadPaymentMethods() {
+            const r = await fetch('/api/payment-methods?active_only=true');
+            const all = await r.json();
+            this.cards = all.filter(m => m.type === 'credit_card');
+            this.checkings = all.filter(m => m.type === 'checking');
+            this.cardsNeedingSetup = this.cards.filter(c => !c.paid_from_payment_method_id);
+        },
+        async saveSetup(cardId) {
+            const target = this.setupChoice[cardId];
+            if (!target) return;
+            const r = await fetch(`/api/payment-methods/${cardId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({paid_from_payment_method_id: target}),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                alert(err.detail || 'failed');
+                return;
+            }
+            await this.loadPaymentMethods();
+            await this.loadOverdraft();
+        },
+        toggleExpand(id) {
+            this.expanded = {...this.expanded, [id]: !this.expanded[id]};
+        },
+        formatAmount(amount) {
+            const n = parseFloat(amount);
+            if (Number.isNaN(n)) return '';
+            return n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        },
+    };
+}
+</script>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}

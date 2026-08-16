@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+
+{% block title %}Annual report — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="annualPage()" x-init="init()">
+
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h2 class="text-2xl font-semibold text-slate-900">Annual report</h2>
+                <p class="text-sm text-slate-600">Each month is sourced from its finalized snapshot when closed; otherwise live-computed at the rate active that month.</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <label class="text-sm text-slate-600">Year</label>
+                <select x-model.number="year"
+                        class="border border-slate-300 rounded px-2 py-1 text-sm">
+                    <template x-for="y in years" :key="y">
+                        <option :value="y" :selected="y === year" x-text="y"></option>
+                    </template>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Aggregates (always rendered; fallback x_text returns '—' when report null) -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-emerald-50 border border-emerald-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-emerald-700">Net income YTD</div>
+            <div class="text-2xl font-semibold text-emerald-900" x-text="formatUsd(report?.net_income_usd)"></div>
+            <div class="text-[10px] text-emerald-600 font-mono" x-text="formatBrl(report?.net_income_usd)"></div>
+            <div class="text-xs text-emerald-700 mt-1">
+                Gross <span x-text="formatUsd(report?.gross_income_usd)"></span> ·
+                Taxes <span x-text="formatUsd(report?.taxes_usd)"></span>
+            </div>
+        </div>
+        <div class="bg-rose-50 border border-rose-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-rose-700">Spending YTD</div>
+            <div class="text-2xl font-semibold text-rose-900" x-text="formatUsd(report?.total_spending_usd)"></div>
+            <div class="text-[10px] text-rose-600 font-mono" x-text="formatBrl(report?.total_spending_usd)"></div>
+            <div class="text-xs text-rose-700 mt-1">
+                Fixed <span x-text="formatUsd(report?.fixed_spending_usd)"></span> ·
+                Var <span x-text="formatUsd(report?.variable_spending_usd)"></span>
+            </div>
+        </div>
+        <div class="bg-blue-50 border border-blue-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-blue-700">Surplus YTD</div>
+            <div class="text-2xl font-semibold text-blue-900" x-text="formatUsd(report?.surplus_usd)"></div>
+            <div class="text-[10px] text-blue-600 font-mono" x-text="formatBrl(report?.surplus_usd)"></div>
+        </div>
+        <div class="bg-slate-100 border border-slate-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-slate-700">Net worth (latest)</div>
+            <div class="text-2xl font-semibold" :class="parseFloat(report?.end_net_worth_usd || 0) >= 0 ? 'text-slate-900' : 'text-rose-700'"
+                 x-text="formatUsd(report?.end_net_worth_usd)"></div>
+            <div class="text-[10px] text-slate-500 font-mono" x-text="formatBrl(report?.end_net_worth_usd)"></div>
+            <div class="text-xs text-slate-600 mt-1">
+                Savings <span x-text="formatUsd(report?.end_savings_usd)"></span> ·
+                Debt <span x-text="formatUsd(report?.end_debt_usd)"></span>
+            </div>
+        </div>
+        <div class="bg-violet-50 border border-violet-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-violet-700">Total Worth (latest)</div>
+            <div class="text-2xl font-semibold" :class="parseFloat(report?.end_total_worth_usd || 0) >= 0 ? 'text-violet-900' : 'text-rose-700'"
+                 x-text="formatUsd(report?.end_total_worth_usd)"></div>
+            <div class="text-[10px] text-violet-500 font-mono" x-text="formatBrl(report?.end_total_worth_usd)"></div>
+            <div class="text-xs text-violet-700 mt-1">
+                Net worth + Assets
+                (<span x-text="formatUsd(report?.end_assets_usd)"></span>)
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts (always-mounted; canvases stay in the DOM so Chart.js doesn't
+         lose them across an x-show toggle). -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+            <h3 class="text-sm font-semibold text-slate-800 mb-2">Worth trajectory (Net + Total)</h3>
+            <div class="relative" style="height: 220px;">
+                <canvas x-ref="netWorthChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+            <h3 class="text-sm font-semibold text-slate-800 mb-2">Surplus per month</h3>
+            <div class="relative" style="height: 220px;">
+                <canvas x-ref="surplusChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4 lg:col-span-2">
+            <h3 class="text-sm font-semibold text-slate-800 mb-2">Spending (Fixed vs Variable vs Taxes)</h3>
+            <div class="relative" style="height: 240px;">
+                <canvas x-ref="spendingChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4 lg:col-span-2">
+            <h3 class="text-sm font-semibold text-slate-800 mb-2">
+                Top spending categories (YTD)
+                <span class="text-xs font-normal text-slate-500">— Taxes excluded; FIXED + VARIABLE combined</span>
+            </h3>
+            <div class="relative" style="height: 420px;">
+                <canvas x-ref="topCategoriesChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Per-month table (always rendered) -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-slate-100 text-slate-700 text-left text-xs">
+                    <th class="px-3 py-2 font-medium">Month</th>
+                    <th class="px-3 py-2 font-medium text-right">Gross</th>
+                    <th class="px-3 py-2 font-medium text-right">Taxes</th>
+                    <th class="px-3 py-2 font-medium text-right">Net income</th>
+                    <th class="px-3 py-2 font-medium text-right">Fixed</th>
+                    <th class="px-3 py-2 font-medium text-right">Variable</th>
+                    <th class="px-3 py-2 font-medium text-right">Surplus</th>
+                    <th class="px-3 py-2 font-medium text-right">Net worth</th>
+                    <th class="px-3 py-2 font-medium">State</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="m in report?.months || []" :key="m.month">
+                    <tr class="border-b border-slate-100"
+                        :class="!hasActivity(m) ? 'opacity-50' : ''">
+                        <td class="px-3 py-2 font-medium text-slate-700" x-text="monthName(m.month)"></td>
+                        <td class="px-3 py-2 text-right text-slate-800" x-text="formatUsd(m.gross_income_usd)"></td>
+                        <td class="px-3 py-2 text-right text-rose-700" x-text="formatUsd(m.taxes_usd)"></td>
+                        <td class="px-3 py-2 text-right font-medium text-emerald-700" x-text="formatUsd(m.net_income_usd)"></td>
+                        <td class="px-3 py-2 text-right text-slate-700" x-text="formatUsd(m.fixed_spending_usd)"></td>
+                        <td class="px-3 py-2 text-right text-slate-700" x-text="formatUsd(m.variable_spending_usd)"></td>
+                        <td class="px-3 py-2 text-right font-medium"
+                            :class="parseFloat(m.surplus_usd) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                            x-text="formatUsd(m.surplus_usd)"></td>
+                        <td class="px-3 py-2 text-right font-medium"
+                            :class="parseFloat(m.net_worth_usd) >= 0 ? 'text-slate-900' : 'text-rose-700'"
+                            x-text="formatUsd(m.net_worth_usd)"></td>
+                        <td class="px-3 py-2">
+                            <span x-show="m.is_finalized" class="inline-block px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded">FINAL</span>
+                            <span x-show="!m.is_finalized && hasActivity(m)" class="inline-block px-2 py-0.5 text-xs bg-amber-100 text-amber-800 rounded">LIVE</span>
+                            <span x-show="!hasActivity(m)" class="text-xs text-slate-400">—</span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>[x-cloak] { display: none !important; }</style>
+<script src="/static/vendor/chart-4.4.4.min.js"></script>
+<script>
+function annualPage() {
+    const today = new Date();
+    return {
+        year: today.getFullYear(),
+        years: (() => { const y = today.getFullYear(); return [y - 2, y - 1, y, y + 1]; })(),
+        report: null,
+        charts: { netWorth: null, surplus: null, spending: null, topCategories: null },
+
+        async init() {
+            await this.reload();
+            // Only redraw after the initial load completes — avoids a possible
+            // double reload (and chart destroy/recreate flash) at boot time.
+            this.$watch('year', () => this.reload());
+        },
+
+        async reload() {
+            const res = await fetch(`/api/reports/annual?year=${this.year}`);
+            this.report = await res.json();
+            // x-show toggles display via CSS on the same tick — Chart.js needs the
+            // canvas to have non-zero CSS dimensions or it renders 0x0. Wait an
+            // animation frame after $nextTick so layout settles before drawing.
+            this.$nextTick(() => requestAnimationFrame(() => this.drawCharts()));
+        },
+
+        hasActivity(m) {
+            return parseFloat(m.gross_income_usd || 0) !== 0
+                || parseFloat(m.total_spending_usd || 0) !== 0
+                || parseFloat(m.total_savings_usd || 0) !== 0
+                || parseFloat(m.total_debt_usd || 0) !== 0;
+        },
+
+        monthName(m) {
+            return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+        },
+
+        formatUsd(v) {
+            if (v === null || v === undefined || v === '') return '—';
+            const n = parseFloat(v);
+            if (Number.isNaN(n)) return '—';
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        latestRate() {
+            // Use the latest active month's exchange_rate for BRL conversion.
+            if (!this.report?.months) return null;
+            const active = this.report.months.filter(m => this.hasActivity(m));
+            const last = active[active.length - 1];
+            return last?.rate_effective ? parseFloat(last.rate_effective) : null;
+        },
+        formatBrl(v) {
+            const rate = this.latestRate();
+            if (!rate || v === null || v === undefined || v === '') return '';
+            const n = parseFloat(v);
+            if (Number.isNaN(n)) return '';
+            const brl = n * rate;
+            const sign = brl < 0 ? '-' : '';
+            return `${sign}R$ ${Math.abs(brl).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+
+        drawCharts() {
+            if (!this.report) return;
+            const labels = this.report.months.map(m => this.monthName(m.month));
+            const active = this.report.months.map(m => this.hasActivity(m));
+
+            // Destroy previous instances.
+            for (const k of Object.keys(this.charts)) {
+                if (this.charts[k]) { this.charts[k].destroy(); this.charts[k] = null; }
+            }
+
+            const baseOpts = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+            };
+
+            this.charts.netWorth = new Chart(this.$refs.netWorthChart, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Net worth (liquid)',
+                            data: this.report.months.map((m, i) => active[i] ? parseFloat(m.net_worth_usd) : null),
+                            borderColor: '#0f172a',
+                            backgroundColor: 'rgba(15,23,42,0.1)',
+                            spanGaps: true,
+                            tension: 0.2,
+                        },
+                        {
+                            label: 'Total Worth (with assets)',
+                            data: this.report.months.map((m, i) => active[i] ? parseFloat(m.total_worth_usd) : null),
+                            borderColor: '#7c3aed',
+                            backgroundColor: 'rgba(124,58,237,0.1)',
+                            borderDash: [4, 4],
+                            spanGaps: true,
+                            tension: 0.2,
+                        },
+                    ],
+                },
+                options: { ...baseOpts, plugins: { legend: { display: true, position: 'bottom' } } },
+            });
+
+            this.charts.surplus = new Chart(this.$refs.surplusChart, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Surplus',
+                        data: this.report.months.map((m, i) => active[i] ? parseFloat(m.surplus_usd) : null),
+                        backgroundColor: this.report.months.map(m => parseFloat(m.surplus_usd) >= 0 ? '#10b981' : '#ef4444'),
+                    }],
+                },
+                options: { ...baseOpts, plugins: { legend: { display: false } } },
+            });
+
+            this.charts.spending = new Chart(this.$refs.spendingChart, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Fixed',    data: this.report.months.map((m, i) => active[i] ? parseFloat(m.fixed_spending_usd) : null), backgroundColor: '#8e44ad' },
+                        { label: 'Variable', data: this.report.months.map((m, i) => active[i] ? parseFloat(m.variable_spending_usd) : null), backgroundColor: '#f59e0b' },
+                        { label: 'Taxes',    data: this.report.months.map((m, i) => active[i] ? parseFloat(m.taxes_usd) : null), backgroundColor: '#64748b' },
+                    ],
+                },
+                options: { ...baseOpts, scales: { x: { stacked: true }, y: { stacked: true } } },
+            });
+
+            const tops = this.report.top_categories || [];
+            this.charts.topCategories = new Chart(this.$refs.topCategoriesChart, {
+                type: 'bar',
+                data: {
+                    labels: tops.map(c => `${c.category_icon ? c.category_icon + ' ' : ''}${c.category_name} (${c.category_type === 'fixed' ? 'F' : 'V'})`),
+                    datasets: [{
+                        label: 'Total spent (USD)',
+                        data: tops.map(c => parseFloat(c.amount_usd)),
+                        backgroundColor: tops.map(c => c.color || (c.category_type === 'fixed' ? '#8e44ad' : '#f59e0b')),
+                    }],
+                },
+                options: {
+                    ...baseOpts,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => `$${ctx.parsed.x.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`,
+                            },
+                        },
+                    },
+                    scales: { x: { beginAtZero: true } },
+                },
+            });
+        },
+    }
+}
+</script>
+{% endblock %}

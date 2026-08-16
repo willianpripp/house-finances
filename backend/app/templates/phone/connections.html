@@ -1,0 +1,979 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Connections — {{ app_name }}{% endblock %}
+{% block ptitle %}Connections{% endblock %}
+
+{% block content %}
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script src="https://cdn.pluggy.ai/pluggy-connect/v2.8.2/pluggy-connect.js"></script>
+
+<div x-data="phoneConnections()" x-init="init()" class="space-y-3">
+
+    <template x-if="message">
+        <div class="rounded-lg px-3 py-2 text-sm"
+             :class="messageOk ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-rose-50 border border-rose-200 text-rose-800'"
+             x-text="message"></div>
+    </template>
+
+    <button @click="refreshAllBalances()" :disabled="busy"
+            class="w-full py-3 rounded-lg bg-emerald-600 text-white text-sm font-medium disabled:opacity-50">
+        <span x-show="!busy">Refresh all balances</span>
+        <span x-show="busy">Refreshing…</span>
+    </button>
+
+    <!-- Balance before→after -->
+    <div class="pcard" x-show="balanceChanges.length" x-cloak>
+        <div class="flex items-center justify-between text-xs font-medium text-slate-600 mb-1">
+            <span>Balance changes</span>
+            <button @click="balanceChanges = []" class="text-slate-400">dismiss</button>
+        </div>
+        <template x-for="c in balanceChanges" :key="c.name">
+            <div class="prow text-sm">
+                <span class="grow text-slate-700" x-text="c.name"></span>
+                <span class="text-xs text-slate-500 whitespace-nowrap"
+                      x-text="(c.old === null ? '—' : c.old.toFixed(2)) + ' → ' + c.new.toFixed(2)"></span>
+                <span class="text-xs font-medium whitespace-nowrap"
+                      :class="c.delta === null ? 'text-slate-400' : (c.delta > 0 ? 'text-rose-600' : 'text-emerald-600')"
+                      x-text="c.delta === null ? 'new' : ((c.delta > 0 ? '+' : '') + c.delta.toFixed(2))"></span>
+            </div>
+        </template>
+    </div>
+
+    <!-- US banks (Plaid) -->
+    <div class="pcard">
+        <div class="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-1">US banks · Plaid</div>
+        <template x-if="!plaidReady">
+            <div class="text-sm text-amber-700 py-2">Plaid is not configured.</div>
+        </template>
+        <template x-if="plaidReady && items.length === 0">
+            <div class="text-sm text-slate-400 py-2">No banks connected yet.</div>
+        </template>
+        <template x-for="item in items" :key="item.id">
+            <div class="border-b border-slate-100 last:border-0 py-1">
+                <div class="prow" @click="toggleAccounts(item.id)">
+                    <span class="grow">
+                        <span class="text-sm font-medium text-slate-800" x-text="item.institution_name"></span>
+                        <span class="block text-xs text-slate-500"
+                              x-text="(item.mapped_payment_methods || []).length
+                                      ? item.mapped_payment_methods.join(' + ')
+                                      : 'no accounts mapped'"></span>
+                        <span class="block text-xs text-slate-400"
+                              x-text="(item.last_sync_at ? 'synced ' + new Date(item.last_sync_at).toLocaleDateString() : 'never synced')
+                                      + (item.last_skipped_unmapped > 0 ? ' · ' + item.last_skipped_unmapped + ' skipped' : '')"></span>
+                    </span>
+                    <span class="text-xs px-1.5 py-0.5 rounded"
+                          :class="item.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                          x-text="item.status"></span>
+                    <span class="text-slate-400" x-text="expanded === item.id ? '▾' : '▸'"></span>
+                </div>
+                <div class="text-xs text-rose-600" x-show="item.last_sync_error" x-text="item.last_sync_error"></div>
+
+                <div x-show="expanded === item.id" x-cloak class="space-y-2 pb-2">
+                    <template x-if="(accounts[item.id] || []).length === 0">
+                        <div class="text-sm text-slate-400">Loading accounts…</div>
+                    </template>
+                    <template x-for="acc in (accounts[item.id] || [])" :key="acc.plaid_account_id">
+                        <div class="bg-slate-50 rounded-lg p-2 space-y-2">
+                            <div class="text-sm">
+                                <span class="font-medium text-slate-700" x-text="acc.name"></span>
+                                <span class="text-slate-400 text-xs ml-1" x-text="acc.subtype + (acc.mask ? ' ••' + acc.mask : '')"></span>
+                                <span class="block text-xs text-emerald-600" x-show="acc.payment_method_name"
+                                      x-text="'→ ' + acc.payment_method_name"></span>
+                            </div>
+                            <button x-show="acc.payment_method_id" @click="reviewAccount(acc)" :disabled="reviewBusy"
+                                    class="w-full py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium disabled:opacity-50">
+                                Review transactions
+                            </button>
+                            <div class="flex gap-2">
+                                <select x-model="mapSel[acc.plaid_account_id]"
+                                        class="flex-1 text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-0">
+                                    <option value="">— map to —</option>
+                                    <template x-for="pm in paymentMethods" :key="pm.id">
+                                        <option :value="pm.id" x-text="pm.name + ' (' + pm.currency + ')'"
+                                                :selected="acc.payment_method_id === pm.id"></option>
+                                    </template>
+                                </select>
+                                <button @click="mapAccount(item.id, acc.plaid_account_id)"
+                                        class="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs">Map</button>
+                            </div>
+                        </div>
+                    </template>
+                    <div class="flex flex-wrap gap-2">
+                        <button @click="addAccounts(item)" :disabled="busy"
+                                class="text-xs border border-slate-300 rounded-md px-3 py-1.5 text-slate-600 disabled:opacity-50">Add accounts</button>
+                        <button @click="refreshBalances(item.id)" :disabled="busy"
+                                class="text-xs border border-slate-300 rounded-md px-3 py-1.5 text-slate-600 disabled:opacity-50">Refresh balances</button>
+                        <button @click="resetCursor(item.id)" :disabled="busy" x-show="item.last_skipped_unmapped > 0"
+                                class="text-xs border border-slate-300 rounded-md px-3 py-1.5 text-slate-600 disabled:opacity-50">Reset &amp; re-sync</button>
+                    </div>
+                </div>
+            </div>
+        </template>
+        <button x-show="plaidReady" @click="connect()" :disabled="busy"
+                class="w-full mt-2 py-2.5 rounded-lg border border-indigo-300 text-indigo-700 text-sm font-medium disabled:opacity-50">
+            + Connect US bank
+        </button>
+    </div>
+
+    <!-- BR banks (Pluggy) -->
+    <div class="pcard">
+        <div class="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-1">BR banks · Pluggy</div>
+        <template x-if="!pluggyReady">
+            <div class="text-sm text-amber-700 py-2">Pluggy is not configured.</div>
+        </template>
+        <template x-if="pluggyReady && pluggyItems.length === 0">
+            <div class="text-sm text-slate-400 py-2">No Pluggy connections registered yet.</div>
+        </template>
+        <template x-for="item in pluggyItems" :key="item.id">
+            <div class="border-b border-slate-100 last:border-0 py-1">
+                <div class="prow" @click="togglePluggyAccounts(item.id)">
+                    <span class="grow">
+                        <span class="text-sm font-medium text-slate-800" x-text="item.connector_name || item.item_id"></span>
+                        <span class="block text-xs text-slate-500"
+                              x-text="(item.mapped_payment_methods || []).length
+                                      ? item.mapped_payment_methods.join(' + ')
+                                      : 'no accounts mapped'"></span>
+                        <span class="block text-xs text-slate-400" x-show="item.last_sync_at"
+                              x-text="'synced ' + new Date(item.last_sync_at).toLocaleDateString()"></span>
+                    </span>
+                    <span class="text-xs px-1.5 py-0.5 rounded"
+                          :class="item.status === 'UPDATED' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'"
+                          x-text="item.status || 'UNKNOWN'"></span>
+                    <span class="text-slate-400" x-text="pluggyExpanded === item.id ? '▾' : '▸'"></span>
+                </div>
+                <div class="text-xs text-rose-600" x-show="item.last_sync_error" x-text="item.last_sync_error"></div>
+
+                <div x-show="pluggyExpanded === item.id" x-cloak class="space-y-2 pb-2">
+                    <template x-if="(pluggyAccounts[item.id] || []).length === 0">
+                        <div class="text-sm text-slate-400">Loading accounts…</div>
+                    </template>
+                    <template x-for="acc in (pluggyAccounts[item.id] || [])" :key="acc.pluggy_account_id">
+                        <div class="bg-slate-50 rounded-lg p-2 space-y-2">
+                            <div class="text-sm">
+                                <span class="font-medium text-slate-700" x-text="acc.name"></span>
+                                <span class="text-slate-400 text-xs ml-1"
+                                      x-text="(acc.subtype || acc.type) + (acc.currency ? ' · ' + acc.currency : '')"></span>
+                                <span class="block text-xs text-emerald-600" x-show="acc.payment_method_name"
+                                      x-text="'→ ' + acc.payment_method_name"></span>
+                            </div>
+                            <button x-show="acc.payment_method_id" @click="reviewAccount(acc, 'pluggy')" :disabled="reviewBusy"
+                                    class="w-full py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium disabled:opacity-50">
+                                Review transactions
+                            </button>
+                            <div class="flex gap-2">
+                                <select x-model="pluggyMapSel[acc.pluggy_account_id]"
+                                        class="flex-1 text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-0">
+                                    <option value="">— map to —</option>
+                                    <template x-for="pm in paymentMethods" :key="pm.id">
+                                        <option :value="pm.id" x-text="pm.name + ' (' + pm.currency + ')'"
+                                                :selected="acc.payment_method_id === pm.id"></option>
+                                    </template>
+                                </select>
+                                <button @click="mapPluggyAccount(item.id, acc.pluggy_account_id)"
+                                        class="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs">Map</button>
+                            </div>
+                        </div>
+                    </template>
+                    <template x-if="pluggyInvestments[item.id] && pluggyInvestments[item.id].total_positions > 0">
+                        <div class="bg-slate-50 rounded-lg p-2 space-y-2">
+                            <div class="text-sm">
+                                <span class="font-medium text-slate-700">Investments (aggregate)</span>
+                                <span class="block text-xs text-slate-400"
+                                      x-text="pluggyInvestments[item.id].active_positions + ' active · '
+                                              + (pluggyInvestments[item.id].currency || '') + ' '
+                                              + pluggyInvestments[item.id].total.toFixed(2)"></span>
+                                <span class="block text-xs text-emerald-600" x-show="pluggyInvestments[item.id].payment_method_name"
+                                      x-text="'→ ' + pluggyInvestments[item.id].payment_method_name"></span>
+                            </div>
+                            <div class="flex gap-2">
+                                <select x-model="pluggyInvSel[item.id]"
+                                        class="flex-1 text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-0">
+                                    <option value="">— track to —</option>
+                                    <template x-for="pm in paymentMethods" :key="pm.id">
+                                        <option :value="pm.id" x-text="pm.name + ' (' + pm.currency + ')'"
+                                                :selected="pluggyInvestments[item.id].payment_method_id === pm.id"></option>
+                                    </template>
+                                </select>
+                                <button @click="trackPluggyInvestments(item.id)"
+                                        class="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs">Save</button>
+                            </div>
+                        </div>
+                    </template>
+                    <button @click="unregisterPluggyItem(item)" :disabled="busy"
+                            class="text-xs border border-rose-200 rounded-md px-3 py-1.5 text-rose-600 disabled:opacity-50">Remove connection</button>
+                </div>
+            </div>
+        </template>
+        <button x-show="pluggyReady" @click="openPluggyConnect()" :disabled="busy"
+                class="w-full mt-2 py-2.5 rounded-lg border border-emerald-300 text-emerald-700 text-sm font-medium disabled:opacity-50">
+            + Connect BR bank
+        </button>
+        <details class="mt-2" x-show="pluggyReady">
+            <summary class="text-xs text-slate-500">…or register a pasted item id</summary>
+            <div class="flex gap-2 mt-2">
+                <input type="text" x-model.trim="pluggyItemIdInput" placeholder="item id (UUID)"
+                       class="flex-1 text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-mono min-w-0">
+                <button @click="registerPluggyItem()" :disabled="busy || !pluggyItemIdInput"
+                        class="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs disabled:opacity-50">Register</button>
+            </div>
+        </details>
+    </div>
+
+    <!-- REVIEW: full-screen flow -->
+    <div x-show="review" x-cloak class="fixed inset-0 z-40 bg-slate-50 overflow-y-auto">
+        <div class="ptop">
+            <button @click="closeReview()" class="text-slate-500 text-xl leading-none px-1">←</button>
+            <div class="ptitle text-slate-900">
+                Review · <span x-text="review?.payment_method_name"></span>
+            </div>
+        </div>
+        <div class="p-3 pb-28 space-y-2">
+            <div class="text-xs text-slate-500">
+                Uncheck a row to dismiss it permanently. Nothing is written until you Commit.
+            </div>
+
+            <template x-if="reviewError">
+                <div class="rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2 text-sm" x-text="reviewError"></div>
+            </template>
+            <template x-if="reviewResult">
+                <div class="rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2 text-sm" x-text="reviewResult"></div>
+            </template>
+
+            <!-- CARD rows -->
+            <template x-if="review?.kind === 'card'">
+                <div class="space-y-2">
+                    <div class="flex items-center gap-3 text-xs text-slate-600">
+                        <label class="flex items-center gap-1">
+                            <input type="checkbox" :checked="allCcSelected()" @change="toggleAllCc($event.target.checked)"> all
+                        </label>
+                        <span class="text-emerald-700" x-text="'new ' + review.preview.new_count"></span>
+                        <span class="text-amber-700" x-text="'dup ' + review.preview.duplicate_count"></span>
+                        <label x-show="hiddenCount(review.preview.transactions) > 0" class="ml-auto flex items-center gap-1">
+                            <input type="checkbox" x-model="showImported">
+                            imported (<span x-text="hiddenCount(review.preview.transactions)"></span>)
+                        </label>
+                    </div>
+                    <template x-if="review.preview.transactions.length === 0">
+                        <div class="text-sm text-slate-400 py-6 text-center">No transactions in this window.</div>
+                    </template>
+                    <template x-for="(t, idx) in review.preview.transactions" :key="idx">
+                        <div class="pcard" x-show="showImported || !t.already_imported"
+                             :class="[t.is_duplicate ? 'opacity-60' : '', ccSkipped.has(idx) ? 'opacity-40' : '']">
+                            <div class="flex items-start gap-2">
+                                <input type="checkbox" class="mt-1" :checked="!ccSkipped.has(idx)" @change="toggleCc(idx)">
+                                <div class="flex-1 min-w-0" @click="editRow = editRow === idx ? null : idx">
+                                    <div class="flex items-baseline justify-between gap-2">
+                                        <span class="text-xs text-slate-500 whitespace-nowrap" x-text="t.transaction_date"></span>
+                                        <span class="text-sm font-semibold whitespace-nowrap"
+                                              :class="parseFloat(t.amount) < 0 ? 'text-emerald-700' : 'text-slate-900'"
+                                              x-text="formatAmount(t.amount)"></span>
+                                    </div>
+                                    <div class="text-sm text-slate-700" :class="ccSkipped.has(idx) ? 'line-through' : ''"
+                                         x-text="t.description"></div>
+                                    <div class="text-xs text-slate-500 mt-0.5"
+                                         x-text="displayMerchant(idx, t) + ' · ' + displayCategory(idx, t) + ' · ' + ownerName(t.owner_user_id)"></div>
+                                    <div class="mt-1 flex flex-wrap gap-1 text-xs">
+                                        <span x-show="t.is_pending" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="t.is_duplicate" class="px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">DUP</span>
+                                        <span x-show="!t.is_duplicate && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]"
+                                              class="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded">NEW MERCHANT</span>
+                                        <span x-show="rowEdited(idx)" class="px-1.5 py-0.5 bg-amber-100 text-amber-900 rounded">EDITED</span>
+                                        <span x-show="contractConvs[idx]" class="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded"
+                                              x-text="'Split ' + contractConvs[idx]?.installments + '×'"></span>
+                                        <span class="text-slate-400 ml-auto" x-text="editRow === idx ? '▴ close' : '✎ edit'"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- edit disclosure: full power minus save-rule -->
+                            <div x-show="editRow === idx" x-cloak class="mt-2 pl-6 space-y-2">
+                                <select x-show="newMerchantNames[idx] === null || newMerchantNames[idx] === undefined"
+                                        x-model="t.merchant_choice" @change="onMerchantChange(idx, $event.target.value)"
+                                        class="w-full border border-slate-200 rounded px-2 py-1.5 text-xs bg-white">
+                                    <option value="suggested" x-text="`${t.merchant_name}${t.is_new_merchant ? ' (new)' : ''} (suggested)`"></option>
+                                    <option value="__new__">+ Create new…</option>
+                                    <template x-for="m in merchants" :key="m.id">
+                                        <option :value="`m:${m.id}`" x-text="m.name"></option>
+                                    </template>
+                                </select>
+                                <div x-show="newMerchantNames[idx] !== null && newMerchantNames[idx] !== undefined" x-cloak class="flex gap-2">
+                                    <input type="text" placeholder="New merchant name" x-model="newMerchantNames[idx]"
+                                           class="flex-1 border border-emerald-400 rounded px-2 py-1.5 text-xs bg-emerald-50 min-w-0">
+                                    <button @click="cancelNewMerchant(idx)" type="button" class="text-xs text-slate-500 underline">cancel</button>
+                                </div>
+                                <select x-model.number="categoryOverrides[idx]"
+                                        :class="categoryOverrides[idx] ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'"
+                                        class="w-full border rounded px-2 py-1.5 text-xs">
+                                    <option :value="null" x-text="`${t.category_name} (suggested)`"></option>
+                                    <template x-for="c in categories" :key="c.id">
+                                        <option :value="c.id" x-text="`${c.icon ? c.icon + ' ' : ''}${c.name} (${c.type})`"></option>
+                                    </template>
+                                </select>
+                                <div class="flex gap-2">
+                                    <select x-model.number="t.owner_user_id"
+                                            class="flex-1 border border-slate-200 rounded px-2 py-1.5 text-xs bg-white">
+                                        <template x-for="u in users" :key="u.id">
+                                            <option :value="u.id" x-text="u.name"></option>
+                                        </template>
+                                    </select>
+                                    <button x-show="!ccSkipped.has(idx)" @click="openContractModal(idx)"
+                                            class="text-xs text-violet-700 border border-violet-300 rounded px-3 py-1.5">
+                                        <span x-show="!contractConvs[idx]">Split N×</span>
+                                        <span x-show="contractConvs[idx]">edit split</span>
+                                    </button>
+                                    <button x-show="contractConvs[idx]" @click="removeContractConv(idx)"
+                                            class="text-xs text-slate-500 border border-slate-300 rounded px-2 py-1.5">×</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </template>
+
+            <!-- CHECKING rows -->
+            <template x-if="review?.kind === 'checking'">
+                <div class="space-y-2">
+                    <div class="flex items-center gap-3 text-xs text-slate-600 flex-wrap">
+                        <label class="flex items-center gap-1">
+                            <input type="checkbox" :checked="allChkSelected()" @change="toggleAllChk($event.target.checked)"> all
+                        </label>
+                        <span x-text="review.preview.period_start + ' → ' + review.preview.period_end"></span>
+                        <label x-show="hiddenCount(review.preview.activities) > 0" class="ml-auto flex items-center gap-1">
+                            <input type="checkbox" x-model="showImported">
+                            imported (<span x-text="hiddenCount(review.preview.activities)"></span>)
+                        </label>
+                    </div>
+                    <template x-if="(review.preview.activities || []).length === 0">
+                        <div class="text-sm text-slate-400 py-6 text-center">No activity in this window.</div>
+                    </template>
+                    <template x-for="(a, idx) in review.preview.activities" :key="idx">
+                        <div class="pcard" x-show="showImported || !a.already_imported"
+                             :class="[a.is_duplicate || a.classification === 'INTERNAL_TRANSFER' ? 'opacity-70' : '', chkSkipped.has(idx) ? 'opacity-40' : '']">
+                            <div class="flex items-start gap-2">
+                                <input type="checkbox" class="mt-1" :checked="!chkSkipped.has(idx)" @change="toggleChk(idx)">
+                                <div class="flex-1 min-w-0" @click="editRow = editRow === idx ? null : idx">
+                                    <div class="flex items-baseline justify-between gap-2">
+                                        <span class="text-xs text-slate-500 whitespace-nowrap" x-text="a.activity_date"></span>
+                                        <span class="text-sm font-semibold whitespace-nowrap"
+                                              :class="parseFloat(a.amount) > 0 ? 'text-emerald-700' : 'text-slate-900'"
+                                              x-text="formatAmount(a.amount)"></span>
+                                    </div>
+                                    <div class="text-sm text-slate-700" :class="chkSkipped.has(idx) ? 'line-through' : ''"
+                                         x-text="a.description"></div>
+                                    <div class="text-xs text-slate-500 mt-0.5" x-show="a.transaction_merchant && a.transaction_merchant !== a.description"
+                                         x-text="'→ ' + a.transaction_merchant + ' / ' + a.transaction_category"></div>
+                                    <div class="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                                        <span class="px-1.5 py-0.5 rounded font-mono" :class="checkingClassBadge(a.classification)"
+                                              x-text="a.classification"></span>
+                                        <span x-show="a.pending" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="contractConvs[idx]" class="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded"
+                                              x-text="'Split ' + contractConvs[idx]?.installments + '×'"></span>
+                                        <span class="text-slate-400 ml-auto" x-text="editRow === idx ? '▴ close' : '✎ edit'"></span>
+                                    </div>
+                                    <div class="text-xs mt-1">
+                                        <span x-show="chkPayCard[idx]" class="text-blue-700 font-medium"
+                                              x-text="'Pay ' + (payableCards().find(c => c.id === chkPayCard[idx])?.name || 'card')"></span>
+                                        <span x-show="!chkPayCard[idx] && chkCategoryOverrides[idx]" class="text-emerald-700 font-medium"
+                                              x-text="'Insert as ' + (categories.find(c => c.id === chkCategoryOverrides[idx])?.name || 'category')"></span>
+                                        <span class="text-slate-600" x-show="!chkCategoryOverrides[idx] && !chkPayCard[idx]" x-text="a.will_action"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div x-show="editRow === idx" x-cloak class="mt-2 pl-6 space-y-2">
+                                <select x-model.number="chkCategoryOverrides[idx]"
+                                        @change="if(chkCategoryOverrides[idx]){ chkSkipped.delete(idx); chkSkipped = new Set(chkSkipped); chkPayCard[idx]=null; }"
+                                        :class="chkCategoryOverrides[idx] ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'"
+                                        class="w-full border rounded px-2 py-1.5 text-xs">
+                                    <option :value="null">category (auto)</option>
+                                    <template x-for="c in categories" :key="c.id">
+                                        <option :value="c.id" x-text="`${c.icon ? c.icon + ' ' : ''}${c.name} (${c.type})`"></option>
+                                    </template>
+                                </select>
+                                <input x-show="chkCategoryOverrides[idx]" x-cloak type="text"
+                                       placeholder="merchant (optional)" x-model="chkMerchantNames[idx]"
+                                       class="w-full border border-slate-200 rounded px-2 py-1.5 text-xs bg-white">
+                                <select x-model.number="chkPayCard[idx]"
+                                        @change="if(chkPayCard[idx]){ chkSkipped.delete(idx); chkSkipped = new Set(chkSkipped); chkCategoryOverrides[idx]=null; }"
+                                        :class="chkPayCard[idx] ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-white'"
+                                        class="w-full border rounded px-2 py-1.5 text-xs">
+                                    <option :value="null">— or pay card —</option>
+                                    <template x-for="pm in payableCards()" :key="pm.id">
+                                        <option :value="pm.id" x-text="'💳 ' + pm.name"></option>
+                                    </template>
+                                </select>
+                                <div class="flex gap-2">
+                                    <button x-show="chkCategoryOverrides[idx] || chkPayCard[idx]"
+                                            @click="chkCategoryOverrides[idx]=null; chkPayCard[idx]=null"
+                                            class="text-xs text-slate-500 border border-slate-300 rounded px-3 py-1.5">↺ back to auto</button>
+                                    <button x-show="a.classification === 'SPENDING' && !chkSkipped.has(idx)"
+                                            @click="openContractModal(idx)"
+                                            class="text-xs text-violet-700 border border-violet-300 rounded px-3 py-1.5">
+                                        <span x-show="!contractConvs[idx]">Split N×</span>
+                                        <span x-show="contractConvs[idx]">edit split</span>
+                                    </button>
+                                    <button x-show="contractConvs[idx]" @click="removeContractConv(idx)"
+                                            class="text-xs text-slate-500 border border-slate-300 rounded px-2 py-1.5">×</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
+
+        <!-- sticky commit bar -->
+        <div class="fixed inset-x-0 bottom-0 z-50 flex gap-2 p-3 bg-white border-t border-slate-200"
+             style="padding-bottom: calc(12px + env(safe-area-inset-bottom));">
+            <button @click="closeReview()" class="px-4 py-2.5 text-sm border border-slate-300 rounded-lg text-slate-600">Close</button>
+            <button @click="commitReview()" :disabled="reviewBusy || !!reviewResult"
+                    class="flex-1 py-2.5 text-sm rounded-lg bg-emerald-600 text-white font-medium disabled:opacity-50">
+                <span x-show="!reviewBusy"
+                      x-text="'Commit ' + (review?.kind === 'card' ? ccSelectedCount() : chkSelectedCount()) + ' row(s)'"></span>
+                <span x-show="reviewBusy">Saving…</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- SPLIT-INTO-N sheet -->
+    <div x-show="contractModal.open" x-cloak>
+        <div class="psheet-backdrop" style="z-index:60" @click="contractModal.open = false"></div>
+        <div class="psheet" style="z-index:61">
+            <div class="text-base font-semibold text-slate-900 mb-1">Split into N installments</div>
+            <p class="text-xs text-slate-500 mb-3">Only 1/N lands now; rollover writes 2/N..N/N month by month.</p>
+            <div class="space-y-3 text-sm">
+                <div>
+                    <div class="text-slate-800 font-medium" x-text="contractModal.description"></div>
+                    <div class="text-xs text-slate-500" x-text="`${contractModal.activity_date} · ${formatAmount(contractModal.amount)}`"></div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <input type="number" min="2" max="36" x-model.number="contractModal.installments"
+                           class="w-24 border border-slate-300 rounded px-3 py-2 text-sm">
+                    <span class="text-xs text-slate-600"
+                          x-text="contractModal.installments > 0 ? `per installment: ${(Math.abs(contractModal.amount) / contractModal.installments).toFixed(2)}` : ''"></span>
+                </div>
+                <input type="date" x-model="contractModal.contract_end_date"
+                       class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+                <select x-model.number="contractModal.category_id" class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                    <option :value="null">(use categorizer match)</option>
+                    <template x-for="c in categories" :key="c.id">
+                        <option :value="c.id" x-text="(c.icon ? c.icon + ' ' : '') + c.name + ' (' + c.type + ')'"></option>
+                    </template>
+                </select>
+                <div class="flex gap-2">
+                    <button @click="contractModal.open = false"
+                            class="flex-1 py-2.5 text-sm border border-slate-300 rounded-lg text-slate-600">Cancel</button>
+                    <button @click="confirmContractModal()" :disabled="!(contractModal.installments >= 2)"
+                            class="flex-1 py-2.5 text-sm rounded-lg bg-violet-600 text-white font-medium disabled:opacity-50">Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Same state and API contract as the desktop connectionsPage(); differences:
+// full-screen review instead of a modal, per-row ✎ edit disclosure, and NO
+// save-rule toggles (rule saving is a desktop task — owner decision, 2026-08-14).
+// The commit body still sends the flag arrays (all false) so both UIs hit
+// the same endpoint shape.
+function phoneConnections() {
+  return {
+    plaidReady: {{ 'true' if plaid_configured else 'false' }},
+    busy: false,
+    items: [],
+    paymentMethods: [],
+    accounts: {},
+    expanded: null,
+    mapSel: {},
+    message: '',
+    messageOk: true,
+    balanceChanges: [],
+
+    pluggyReady: {{ 'true' if pluggy_configured else 'false' }},
+    pluggyItems: [],
+    pluggyAccounts: {},
+    pluggyExpanded: null,
+    pluggyMapSel: {},
+    pluggyInvestments: {},
+    pluggyInvSel: {},
+    pluggyItemIdInput: '',
+
+    review: null,
+    reviewAccountId: null,
+    reviewProvider: 'plaid',
+    reviewBusy: false,
+    reviewError: '',
+    reviewResult: '',
+    editRow: null,
+    ccSkipped: new Set(),
+    chkSkipped: new Set(),
+    categoryOverrides: [],
+    merchantOverrides: [],
+    newMerchantNames: [],
+    showImported: false,
+    chkCategoryOverrides: [],
+    chkMerchantNames: [],
+    chkPayCard: [],
+    contractConvs: {},
+    contractModal: {
+      open: false, index: null, description: '', activity_date: '', amount: 0,
+      installments: 6, contract_end_date: '', category_id: null,
+    },
+    categories: [],
+    merchants: [],
+    users: [],
+
+    async init() {
+      await Promise.all([this.loadItems(), this.loadPluggyItems(), this.loadPMs(), this.loadLookups()]);
+    },
+    async loadLookups() {
+      const [c, m, u] = await Promise.all([
+        fetch('/api/categories'), fetch('/api/merchants?limit=2000'), fetch('/api/users'),
+      ]);
+      this.categories = c.ok ? await c.json() : [];
+      this.merchants = m.ok ? await m.json() : [];
+      this.users = u.ok ? await u.json() : [];
+    },
+    flash(msg, ok = true) { this.message = msg; this.messageOk = ok; },
+
+    async loadItems() {
+      const r = await fetch('/api/plaid/items');
+      this.items = r.ok ? await r.json() : [];
+    },
+    async loadPMs() {
+      const r = await fetch('/api/payment-methods?active_only=true');
+      this.paymentMethods = r.ok ? await r.json() : [];
+    },
+
+    // ---- Pluggy ----
+    async loadPluggyItems() {
+      const r = await fetch('/api/pluggy/items');
+      this.pluggyItems = r.ok ? await r.json() : [];
+    },
+    async openPluggyConnect() {
+      this.flash('');
+      this.busy = true;
+      const r = await fetch('/api/pluggy/connect_token', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      this.busy = false;
+      if (!r.ok) { this.flash('Could not start Pluggy Connect: ' + (await r.text()), false); return; }
+      const { accessToken } = await r.json();
+      const widget = new PluggyConnect({
+        connectToken: accessToken,
+        includeSandbox: false,
+        onSuccess: (itemData) => {
+          const id = itemData && itemData.item && itemData.item.id;
+          if (id) this.registerPluggyItemById(id);
+          else this.flash('Widget finished but returned no item id — check meu.pluggy.ai and paste it manually.', false);
+        },
+        onError: (error) => {
+          this.flash('Pluggy Connect error: ' + ((error && error.message) || JSON.stringify(error)), false);
+        },
+      });
+      widget.init();
+    },
+    async registerPluggyItem() { await this.registerPluggyItemById(this.pluggyItemIdInput); },
+    async registerPluggyItemById(itemId) {
+      this.flash('');
+      this.busy = true;
+      const r = await fetch('/api/pluggy/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_id: itemId }),
+      });
+      this.busy = false;
+      if (r.ok) {
+        const d = await r.json();
+        let msg = `Registered ${d.connector_name || 'connection'} (${d.accounts.length} accounts). Now map them.`;
+        if (d.conflicts.length) {
+          msg += ` WARNING: ${d.conflicts.length} account(s) already mapped through another item; review before mapping.`;
+        }
+        this.flash(msg, d.conflicts.length === 0);
+        this.pluggyItemIdInput = '';
+        await this.loadPluggyItems();
+      } else {
+        this.flash('Register failed: ' + (await r.text()), false);
+      }
+    },
+    async togglePluggyAccounts(id) {
+      if (this.pluggyExpanded === id) { this.pluggyExpanded = null; return; }
+      this.pluggyExpanded = id;
+      const r = await fetch(`/api/pluggy/items/${id}/accounts`);
+      if (r.ok) {
+        this.pluggyAccounts[id] = await r.json();
+        for (const acc of this.pluggyAccounts[id]) {
+          if (acc.payment_method_id) this.pluggyMapSel[acc.pluggy_account_id] = String(acc.payment_method_id);
+        }
+      } else {
+        this.flash('Could not load accounts: ' + (await r.text()), false);
+        this.pluggyExpanded = null;
+        return;
+      }
+      const inv = await fetch(`/api/pluggy/items/${id}/investments`);
+      if (inv.ok) {
+        this.pluggyInvestments[id] = await inv.json();
+        if (this.pluggyInvestments[id].payment_method_id) {
+          this.pluggyInvSel[id] = String(this.pluggyInvestments[id].payment_method_id);
+        }
+      }
+    },
+    async trackPluggyInvestments(itemId) {
+      const pmId = this.pluggyInvSel[itemId];
+      this.flash('');
+      const r = await fetch(`/api/pluggy/items/${itemId}/track-investments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_method_id: pmId ? parseInt(pmId, 10) : null }),
+      });
+      if (r.ok) {
+        const inv = await fetch(`/api/pluggy/items/${itemId}/investments`);
+        if (inv.ok) this.pluggyInvestments[itemId] = await inv.json();
+        this.flash(pmId ? 'Investments tracking saved.' : 'Investments tracking removed.', true);
+      } else {
+        this.flash('Track failed: ' + (await r.text()), false);
+      }
+    },
+    async mapPluggyAccount(itemId, accountId) {
+      const pmId = this.pluggyMapSel[accountId];
+      if (!pmId) { this.flash('Pick a payment method first.', false); return; }
+      const r = await fetch(`/api/pluggy/items/${itemId}/map`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pluggy_account_id: accountId, payment_method_id: parseInt(pmId, 10) }),
+      });
+      if (r.ok) {
+        this.flash('Mapped. Manual import is now blocked for this payment method.');
+        const acc = await fetch(`/api/pluggy/items/${itemId}/accounts`);
+        if (acc.ok) this.pluggyAccounts[itemId] = await acc.json();
+      } else {
+        this.flash('Map failed: ' + (await r.text()), false);
+      }
+    },
+    async unregisterPluggyItem(item) {
+      if (!confirm(`Remove ${item.connector_name || item.item_id}? Its payment methods go back to manual import.`)) return;
+      this.busy = true;
+      const r = await fetch(`/api/pluggy/items/${item.id}`, { method: 'DELETE' });
+      this.busy = false;
+      if (r.ok) { this.flash('Removed.'); await this.loadPluggyItems(); }
+      else this.flash('Remove failed: ' + (await r.text()), false);
+    },
+
+    // ---- Plaid ----
+    async connect() {
+      this.flash('');
+      try {
+        const r = await fetch('/api/plaid/link_token', { method: 'POST' });
+        if (!r.ok) { this.flash('Could not create link token: ' + (await r.text()), false); return; }
+        const { link_token } = await r.json();
+        const handler = Plaid.create({
+          token: link_token,
+          onSuccess: async (public_token) => {
+            this.busy = true;
+            const ex = await fetch('/api/plaid/exchange', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ public_token }),
+            });
+            this.busy = false;
+            if (ex.ok) {
+              const d = await ex.json();
+              this.flash(`Connected ${d.institution_name} (${d.accounts_discovered} accounts). Now map them.`);
+              await this.loadItems();
+            } else {
+              this.flash('Exchange failed: ' + (await ex.text()), false);
+            }
+          },
+          onExit: (err) => { if (err) this.flash('Plaid Link exited: ' + (err.display_message || err.error_message || ''), false); },
+        });
+        handler.open();
+      } catch (e) { this.flash('Plaid error: ' + e, false); }
+    },
+    async addAccounts(item) {
+      this.flash('');
+      try {
+        const r = await fetch('/api/plaid/link_token', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_id: item.id }),
+        });
+        if (!r.ok) { this.flash('Could not create update link token: ' + (await r.text()), false); return; }
+        const { link_token } = await r.json();
+        const handler = Plaid.create({
+          token: link_token,
+          onSuccess: async () => {
+            this.flash(`${item.institution_name} re-authorized. Checking for new accounts…`);
+            await this.loadItems();
+            this.expanded = item.id;
+            await this.loadAccounts(item.id);
+          },
+          onExit: (err) => { if (err) this.flash('Plaid Link exited: ' + (err.display_message || err.error_message || ''), false); },
+        });
+        handler.open();
+      } catch (e) { this.flash('Plaid error: ' + e, false); }
+    },
+
+    async refreshAllBalances() {
+      this.busy = true; this.flash(''); this.balanceChanges = [];
+      const errors = [];
+      let refreshed = 0, items = 0, skipped = 0, changes = [];
+      try {
+        const targets = [];
+        if (this.plaidReady) targets.push('/api/plaid/refresh-balances');
+        if (this.pluggyReady) targets.push('/api/pluggy/refresh-balances');
+        for (const url of targets) {
+          const r = await fetch(url, { method: 'POST' });
+          if (r.ok) {
+            const s = await r.json();
+            refreshed += s.refreshed; items += s.items; skipped += s.skipped_unmapped;
+            changes = changes.concat(s.changes || []);
+          } else {
+            errors.push(`${url}: ${await r.text()}`);
+          }
+        }
+        if (errors.length) this.flash('Refresh failed: ' + errors.join(' · '), false);
+        else this.flash(`Refreshed ${refreshed} account(s) across ${items} bank(s). ${skipped} skipped (unmapped).`);
+        this.balanceChanges = changes.filter(c => c.delta === null || Math.abs(c.delta) > 0.005 || c.old === null);
+        await Promise.all([this.loadItems(), this.loadPluggyItems()]);
+      } finally { this.busy = false; }
+    },
+
+    // ---- Review / commit (shared contract with desktop) ----
+    async reviewAccount(acc, provider = 'plaid') {
+      this.reviewBusy = true; this.reviewError = ''; this.reviewResult = '';
+      this.ccSkipped = new Set(); this.chkSkipped = new Set();
+      this.editRow = null;
+      this.reviewProvider = provider;
+      this.reviewAccountId = provider === 'pluggy' ? acc.pluggy_account_id : acc.plaid_account_id;
+      try {
+        const r = await fetch(`/api/${provider}/accounts/${encodeURIComponent(this.reviewAccountId)}/review`);
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          this.reviewError = err.detail || `HTTP ${r.status}`;
+          this.review = { kind: 'card', payment_method_name: acc.payment_method_name,
+                          preview: { transactions: [], payments: [], new_count: 0, duplicate_count: 0 } };
+          return;
+        }
+        this.review = await r.json();
+        this.initOverrides();
+      } catch (e) {
+        this.reviewError = String(e);
+      } finally {
+        this.reviewBusy = false;
+      }
+    },
+    initOverrides() {
+      this.categoryOverrides = []; this.merchantOverrides = [];
+      this.newMerchantNames = [];
+      this.chkCategoryOverrides = []; this.chkMerchantNames = []; this.chkPayCard = [];
+      this.contractConvs = {};
+      if (this.review?.kind === 'card') {
+        (this.review.preview.transactions || []).forEach(t => { t.merchant_choice = 'suggested'; });
+      } else if (this.review?.kind === 'checking') {
+        (this.review.preview.activities || []).forEach((a, i) => {
+          if (a.suggested_category_id) this.chkCategoryOverrides[i] = a.suggested_category_id;
+        });
+      }
+    },
+    closeReview() {
+      this.review = null; this.reviewAccountId = null;
+      this.reviewError = ''; this.reviewResult = '';
+      this.ccSkipped = new Set(); this.chkSkipped = new Set();
+      this.contractConvs = {}; this.contractModal.open = false;
+      this.editRow = null;
+    },
+
+    toggleCc(idx) { this.ccSkipped.has(idx) ? this.ccSkipped.delete(idx) : this.ccSkipped.add(idx); this.ccSkipped = new Set(this.ccSkipped); },
+    toggleChk(idx) { this.chkSkipped.has(idx) ? this.chkSkipped.delete(idx) : this.chkSkipped.add(idx); this.chkSkipped = new Set(this.chkSkipped); },
+    allCcSelected() { const n = this.review?.preview?.transactions?.length || 0; return n > 0 && this.ccSkipped.size === 0; },
+    allChkSelected() { const n = this.review?.preview?.activities?.length || 0; return n > 0 && this.chkSkipped.size === 0; },
+    toggleAllCc(on) { this.ccSkipped = on ? new Set() : new Set((this.review?.preview?.transactions || []).map((_, i) => i)); },
+    toggleAllChk(on) { this.chkSkipped = on ? new Set() : new Set((this.review?.preview?.activities || []).map((_, i) => i)); },
+    ccSelectedCount() { return (this.review?.preview?.transactions?.length || 0) - this.ccSkipped.size; },
+    chkSelectedCount() { return (this.review?.preview?.activities?.length || 0) - this.chkSkipped.size; },
+
+    async commitReview() {
+      if (!this.reviewAccountId) return;
+      this.reviewBusy = true; this.reviewError = '';
+      const isCard = this.review?.kind === 'card';
+      const skip = isCard ? [...this.ccSkipped] : [...this.chkSkipped];
+      const splits = Object.entries(this.contractConvs).map(([idx, c]) => ({
+        index: parseInt(idx, 10),
+        installments: c.installments,
+        contract_end_date: c.contract_end_date || null,
+        category_id: c.category_id || null,
+      }));
+      const body = { skip_indices: skip.length ? skip : null, splits: splits.length ? splits : null };
+      if (isCard) {
+        const txns = this.review.preview.transactions || [];
+        body.category_overrides = txns.map((_, i) => this.categoryOverrides[i] ?? null);
+        body.merchant_overrides = txns.map((_, i) => this.merchantOverrides[i] ?? null);
+        body.new_merchant_names = txns.map((_, i) => this.newMerchantNames[i] || null);
+        body.owner_user_ids = txns.map(t => t.owner_user_id);
+        body.save_rule_flags = txns.map(() => false);
+        body.save_rule_amount_flags = txns.map(() => false);
+      } else {
+        const acts = this.review.preview.activities || [];
+        body.category_overrides = acts.map((_, i) => this.chkCategoryOverrides[i] ?? null);
+        body.save_transfer_rule_flags = acts.map(() => false);
+        body.new_merchant_names = acts.map((_, i) => this.chkMerchantNames[i] || null);
+        body.cc_payment_overrides = acts.map((_, i) => this.chkPayCard[i] ?? null);
+      }
+      try {
+        const r = await fetch(`/api/${this.reviewProvider}/accounts/${encodeURIComponent(this.reviewAccountId)}/commit`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${r.status}`);
+        }
+        const d = await r.json();
+        this.reviewResult = d.kind === 'card'
+          ? `Committed: ${d.transactions_created} transactions created, ${d.duplicates_skipped} duplicates skipped.`
+          : `Checking import committed.`;
+        await Promise.all([this.loadItems(), this.loadPMs()]);
+      } catch (e) {
+        this.reviewError = e.message;
+      } finally {
+        this.reviewBusy = false;
+      }
+    },
+
+    formatAmount(amount) {
+      const n = parseFloat(amount ?? 0);
+      return `${n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
+    },
+    creditCards() { return (this.paymentMethods || []).filter(pm => pm.type === 'credit_card'); },
+    payableCards() { return this.creditCards().filter(pm => !pm.plaid_account_id); },
+    hiddenCount(list) { return (list || []).filter(x => x.already_imported).length; },
+    checkingClassBadge(cls) {
+      switch (cls) {
+        case 'CC_PAYMENT':        return 'bg-blue-100 text-blue-800';
+        case 'SALARY':            return 'bg-emerald-100 text-emerald-800';
+        case 'EXTRA_INCOME':      return 'bg-emerald-100 text-emerald-800';
+        case 'TAX_PAYMENT':       return 'bg-rose-100 text-rose-800';
+        case 'INTEREST':          return 'bg-teal-100 text-teal-800';
+        case 'INTERNAL_TRANSFER': return 'bg-slate-200 text-slate-600';
+        case 'SPENDING':          return 'bg-purple-100 text-purple-800';
+        case 'FIXED_MATCH':       return 'bg-amber-100 text-amber-800';
+        default:                  return 'bg-slate-100 text-slate-700';
+      }
+    },
+
+    rowEdited(idx) {
+      return (
+        (this.categoryOverrides[idx] !== null && this.categoryOverrides[idx] !== undefined) ||
+        (this.merchantOverrides[idx] !== null && this.merchantOverrides[idx] !== undefined) ||
+        (this.newMerchantNames[idx] !== null && this.newMerchantNames[idx] !== undefined && this.newMerchantNames[idx] !== '')
+      );
+    },
+    onMerchantChange(idx, value) {
+      if (value === '__new__') {
+        this.newMerchantNames[idx] = this.review.preview.transactions[idx].merchant_name;
+        this.merchantOverrides[idx] = null;
+      } else if (value === 'suggested') {
+        this.merchantOverrides[idx] = null;
+        this.newMerchantNames[idx] = null;
+      } else if (value.startsWith('m:')) {
+        this.merchantOverrides[idx] = parseInt(value.slice(2), 10);
+        this.newMerchantNames[idx] = null;
+      }
+    },
+    cancelNewMerchant(idx) {
+      this.newMerchantNames[idx] = null;
+      this.review.preview.transactions[idx].merchant_choice = 'suggested';
+    },
+    displayMerchant(idx, t) {
+      if (this.newMerchantNames[idx]) return this.newMerchantNames[idx] + ' (new)';
+      if (this.merchantOverrides[idx]) {
+        const m = this.merchants.find(m => m.id === this.merchantOverrides[idx]);
+        if (m) return m.name;
+      }
+      return t.merchant_name;
+    },
+    displayCategory(idx, t) {
+      if (this.categoryOverrides[idx]) {
+        const c = this.categories.find(c => c.id === this.categoryOverrides[idx]);
+        if (c) return c.name;
+      }
+      return t.category_name;
+    },
+    ownerName(id) {
+      const u = this.users.find(u => u.id === id);
+      return u ? u.name : '';
+    },
+
+    openContractModal(idx) {
+      const row = this.review?.kind === 'card'
+        ? this.review.preview.transactions?.[idx]
+        : this.review.preview.activities?.[idx];
+      if (!row) return;
+      const existing = this.contractConvs[idx];
+      this.contractModal = {
+        open: true,
+        index: idx,
+        description: row.description,
+        activity_date: row.transaction_date || row.activity_date,
+        amount: parseFloat(row.amount),
+        installments: existing?.installments ?? 6,
+        contract_end_date: existing?.contract_end_date ?? '',
+        category_id: existing?.category_id ?? null,
+      };
+    },
+    confirmContractModal() {
+      const m = this.contractModal;
+      if (!(m.installments >= 2)) return;
+      this.contractConvs = {
+        ...this.contractConvs,
+        [m.index]: {
+          installments: m.installments,
+          contract_end_date: m.contract_end_date || null,
+          category_id: m.category_id || null,
+        },
+      };
+      this.contractModal.open = false;
+    },
+    removeContractConv(idx) {
+      const next = { ...this.contractConvs };
+      delete next[idx];
+      this.contractConvs = next;
+    },
+
+    async toggleAccounts(itemId) {
+      if (this.expanded === itemId) { this.expanded = null; return; }
+      this.expanded = itemId;
+      if (!this.accounts[itemId]) await this.loadAccounts(itemId);
+    },
+    async loadAccounts(itemId) {
+      const r = await fetch(`/api/plaid/items/${itemId}/accounts`);
+      const list = r.ok ? await r.json() : [];
+      this.accounts[itemId] = list;
+      for (const a of list) if (a.payment_method_id) this.mapSel[a.plaid_account_id] = a.payment_method_id;
+    },
+    async mapAccount(itemId, plaidAccountId) {
+      const pmId = this.mapSel[plaidAccountId];
+      if (!pmId) { this.flash('Pick a payment method first.', false); return; }
+      const r = await fetch(`/api/plaid/items/${itemId}/map`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plaid_account_id: plaidAccountId, payment_method_id: parseInt(pmId) }),
+      });
+      if (r.ok) { this.flash('Mapped.'); await this.loadAccounts(itemId); await this.loadPMs(); }
+      else this.flash('Map failed: ' + (await r.text()), false);
+    },
+    async refreshBalances(itemId) {
+      this.busy = true;
+      try {
+        const r = await fetch(`/api/plaid/items/${itemId}/refresh-balances`, { method: 'POST' });
+        if (r.ok) { const d = await r.json(); this.flash(`Balances refreshed: ${d.refreshed} account(s).`); }
+        else this.flash('Refresh failed: ' + (await r.text()), false);
+      } finally { this.busy = false; }
+    },
+    async resetCursor(itemId) {
+      const r = await fetch(`/api/plaid/items/${itemId}/reset-cursor`, { method: 'POST' });
+      if (r.ok) { this.flash('Cursor reset.'); await this.loadItems(); }
+      else this.flash('Reset failed: ' + (await r.text()), false);
+    },
+  };
+}
+</script>
+<style>
+  [x-cloak] { display: none !important; }
+</style>
+{% endblock %}

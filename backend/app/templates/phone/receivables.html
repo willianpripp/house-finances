@@ -1,0 +1,283 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Receivables — {{ app_name }}{% endblock %}
+{% block ptitle %}Receivables{% endblock %}
+
+{% block content %}
+<div x-data="phoneReceivables()" x-init="init()" class="space-y-3">
+
+    <!-- TOTALS, one line per currency -->
+    <div class="pcard">
+        <template x-for="t in totalsByCurrency()" :key="t.currency">
+            <div class="flex items-center justify-between text-sm py-0.5">
+                <span class="text-xs text-slate-500" x-text="t.currency"></span>
+                <span class="text-emerald-700" x-text="'in ' + formatAmount(t.owed, t.currency)"></span>
+                <span class="text-rose-700" x-text="'out ' + formatAmount(t.mine, t.currency)"></span>
+                <span class="font-semibold" :class="t.net >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                      x-text="formatAmount(t.net, t.currency)"></span>
+            </div>
+        </template>
+    </div>
+
+    <!-- PER PERSON -->
+    <div class="pcard" x-show="summary.length" x-cloak>
+        <template x-for="s in summary" :key="s.person_id + '-' + s.currency">
+            <div class="prow">
+                <span class="grow text-sm text-slate-800" x-text="s.person_name"></span>
+                <span class="text-xs text-slate-400" x-text="s.open_count + '×'"></span>
+                <span class="text-sm font-semibold"
+                      :class="parseFloat(s.net_amount) >= 0 ? 'text-emerald-700' : 'text-rose-700'"
+                      x-text="formatAmount(s.net_amount, s.currency)"></span>
+            </div>
+        </template>
+    </div>
+
+    <!-- FILTERS -->
+    <div class="flex items-center justify-between gap-2">
+        <div class="inline-flex rounded border border-slate-300 overflow-hidden text-xs bg-white">
+            <template x-for="f in [{v:'', l:'All'}, {v:'OWED_TO_ME', l:'Owes me'}, {v:'I_OWE', l:'I owe'}]" :key="f.v">
+                <button type="button" @click="filterDirection = f.v; loadRows()"
+                        :class="filterDirection === f.v ? 'bg-slate-700 text-white' : 'text-slate-600'"
+                        class="px-3 py-1.5 border-l border-slate-300 first:border-l-0" x-text="f.l"></button>
+            </template>
+        </div>
+        <label class="flex items-center gap-1.5 text-xs text-slate-600">
+            <input type="checkbox" x-model="showSettled" @change="loadRows()">
+            paid
+        </label>
+    </div>
+
+    <!-- CHARGES: tap a row to open actions -->
+    <div class="pcard">
+        <template x-for="r in rows" :key="r.id">
+            <div>
+                <div class="prow" :class="r.settled ? 'opacity-50' : ''" @click="expanded = expanded === r.id ? null : r.id">
+                    <span x-text="r.direction === 'I_OWE' ? '🔻' : '🔹'"></span>
+                    <span class="grow">
+                        <span class="text-sm font-medium text-slate-800" x-text="r.person_name"></span>
+                        <span class="block text-xs text-slate-500"
+                              x-text="r.description + (r.store ? ' · ' + r.store : '') + ' · ' + r.charge_date"></span>
+                    </span>
+                    <span class="text-sm font-semibold whitespace-nowrap"
+                          :class="r.direction === 'I_OWE' ? 'text-rose-700' : 'text-slate-800'"
+                          x-text="formatAmount(r.amount, r.currency)"></span>
+                </div>
+                <div x-show="expanded === r.id" x-cloak class="flex gap-2 py-2 pl-8">
+                    <button x-show="!r.settled" @click="settle(r.id, true)"
+                            class="text-xs bg-emerald-600 text-white rounded px-3 py-1.5">Mark paid</button>
+                    <button x-show="r.settled" @click="settle(r.id, false)"
+                            class="text-xs border border-slate-300 rounded px-3 py-1.5 text-slate-600">Reopen</button>
+                    <button @click="del(r.id)"
+                            class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
+                </div>
+            </div>
+        </template>
+        <div x-show="rows.length === 0" class="py-4 text-center text-slate-400 text-sm">Nothing here yet.</div>
+    </div>
+
+    <!-- NEW CHARGE bottom sheet -->
+    <div x-show="sheetOpen" x-cloak>
+        <div class="psheet-backdrop" @click="sheetOpen = false"></div>
+        <div class="psheet space-y-3">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900">New charge</div>
+                <button @click="sheetOpen = false" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <div class="flex gap-2">
+                <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+                    <button type="button" @click="form.direction = 'OWED_TO_ME'"
+                            :class="iOwe() ? 'bg-white text-slate-600' : 'bg-emerald-600 text-white'"
+                            class="px-3 py-2">They owe me</button>
+                    <button type="button" @click="form.direction = 'I_OWE'"
+                            :class="iOwe() ? 'bg-rose-600 text-white' : 'bg-white text-slate-600'"
+                            class="px-3 py-2 border-l border-slate-300">I owe them</button>
+                </div>
+                <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+                    <button type="button" @click="form.currency = 'USD'"
+                            :class="form.currency === 'USD' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600'"
+                            class="px-3 py-2">$</button>
+                    <button type="button" @click="form.currency = 'BRL'"
+                            :class="form.currency === 'BRL' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600'"
+                            class="px-3 py-2 border-l border-slate-300">R$</button>
+                </div>
+            </div>
+
+            <input type="text" x-model="form.description" placeholder="Description (dinner, groceries…)"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+            <input type="text" x-model="form.store" placeholder="Store (optional)"
+                   class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+            <div class="flex gap-2">
+                <input type="date" x-model="form.charge_date"
+                       class="flex-1 border border-slate-300 rounded px-3 py-2 text-sm">
+                <select x-show="!iOwe()" x-model.number="form.payment_method_id"
+                        class="flex-1 border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                    <option :value="null">card —</option>
+                    <template x-for="c in cards" :key="c.id">
+                        <option :value="c.id" x-text="c.name"></option>
+                    </template>
+                </select>
+            </div>
+
+            <div class="flex items-end gap-3" x-show="!iOwe()">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Total bill</label>
+                    <input type="number" step="0.01" min="0" x-model.number="form.total"
+                           class="w-28 border border-slate-300 rounded px-3 py-2 text-sm">
+                </div>
+                <label class="flex items-center gap-1.5 text-xs text-slate-600 pb-2">
+                    <input type="checkbox" x-model="form.includeMe"> my share too
+                </label>
+                <button @click="splitEqual()" type="button"
+                        class="text-xs bg-slate-700 text-white rounded px-3 py-2 mb-0.5">Split equally</button>
+            </div>
+
+            <div>
+                <template x-for="p in people" :key="p.id">
+                    <div class="prow" :class="sel[p.id] ? (iOwe() ? 'bg-rose-50 rounded' : 'bg-emerald-50 rounded') : ''">
+                        <input type="checkbox" :checked="!!sel[p.id]" @change="toggle(p.id)">
+                        <span class="grow text-sm text-slate-800" x-text="p.name"></span>
+                        <input type="number" step="0.01" min="0" x-model.number="parts[p.id]" x-show="sel[p.id]"
+                               class="w-24 border border-slate-300 rounded px-2 py-1.5 text-sm text-right">
+                    </div>
+                </template>
+                <div class="flex items-center gap-2 pt-2">
+                    <input type="text" x-model="newPerson.name" placeholder="New person…"
+                           class="flex-1 border border-slate-300 rounded px-3 py-1.5 text-xs">
+                    <button @click="addPerson()" type="button"
+                            class="text-xs border border-slate-300 rounded px-3 py-1.5">+ Add</button>
+                </div>
+            </div>
+
+            <button @click="submit()" type="button" :disabled="!canSubmit()"
+                    :class="iOwe() ? 'bg-rose-600' : 'bg-emerald-600'"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium disabled:opacity-40">
+                <span x-text="(iOwe() ? 'Add debt' : 'Add receivable') + (selectedTotal() > 0 ? ' — ' + formatAmount(selectedTotal(), form.currency) : '')"></span>
+            </button>
+            <div class="text-sm text-red-600" x-text="error"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<!-- Outside the page's x-data scope, so it talks to it via a window event. -->
+<button class="pfab" x-data @click="window.dispatchEvent(new CustomEvent('open-new-charge'))" title="New charge">+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function phoneReceivables() {
+    return {
+        people: [], cards: [], rows: [], summary: [],
+        showSettled: false,
+        filterDirection: '',
+        sel: {}, parts: {},
+        newPerson: { name: '' },
+        error: '',
+        expanded: null,
+        sheetOpen: false,
+        form: { description: '', store: '', payment_method_id: null, charge_date: '', total: null, includeMe: true, direction: 'OWED_TO_ME', currency: 'USD' },
+
+        iOwe() { return this.form.direction === 'I_OWE'; },
+
+        async init() {
+            this.form.charge_date = new Date().toISOString().slice(0, 10);
+            window.addEventListener('open-new-charge', () => { this.sheetOpen = true; });
+            if (new URLSearchParams(location.search).get('new')) this.sheetOpen = true;
+            await Promise.all([this.loadPeople(), this.loadCards(), this.loadRows(), this.loadSummary()]);
+        },
+        async loadPeople() { this.people = await (await fetch('/api/receivables/people')).json(); },
+        async loadCards() { this.cards = await (await fetch('/api/payment-methods?active_only=true')).json(); },
+        async loadRows() {
+            const params = new URLSearchParams();
+            if (!this.showSettled) params.set('settled', 'false');
+            if (this.filterDirection) params.set('direction', this.filterDirection);
+            const q = params.toString();
+            this.rows = await (await fetch('/api/receivables' + (q ? '?' + q : ''))).json();
+        },
+        async loadSummary() { this.summary = await (await fetch('/api/receivables/summary')).json(); },
+
+        toggle(id) {
+            this.sel[id] = !this.sel[id];
+            if (!this.sel[id]) delete this.parts[id];
+        },
+        participantCount() {
+            return Object.values(this.sel).filter(Boolean).length + (this.form.includeMe ? 1 : 0);
+        },
+        splitEqual() {
+            const n = this.participantCount();
+            if (!n || !this.form.total) return;
+            const each = Math.round((this.form.total / n) * 100) / 100;
+            for (const p of this.people) if (this.sel[p.id]) this.parts[p.id] = each;
+        },
+        selectedTotal() {
+            return this.people.filter(p => this.sel[p.id])
+                .reduce((sum, p) => sum + (parseFloat(this.parts[p.id]) || 0), 0);
+        },
+        canSubmit() {
+            return this.form.description.trim() && this.selectedTotal() > 0;
+        },
+        totalsByCurrency() {
+            const by = {};
+            for (const s of this.summary) {
+                const t = by[s.currency] ||= { currency: s.currency, owed: 0, mine: 0, net: 0 };
+                t.owed += parseFloat(s.owed_to_me);
+                t.mine += parseFloat(s.i_owe);
+                t.net = t.owed - t.mine;
+            }
+            const list = Object.values(by).sort((a, b) => a.currency.localeCompare(b.currency));
+            return list.length ? list : [{ currency: 'USD', owed: 0, mine: 0, net: 0 }];
+        },
+
+        async submit() {
+            this.error = '';
+            const shares = this.people.filter(p => this.sel[p.id] && parseFloat(this.parts[p.id]) > 0)
+                .map(p => ({ person_id: p.id, amount: parseFloat(this.parts[p.id]).toFixed(2) }));
+            if (!shares.length) { this.error = 'Check at least one person with an amount.'; return; }
+            const body = {
+                description: this.form.description.trim(),
+                store: this.form.store.trim() || null,
+                payment_method_id: this.iOwe() ? null : (this.form.payment_method_id || null),
+                charge_date: this.form.charge_date,
+                currency: this.form.currency,
+                direction: this.form.direction,
+                shares,
+            };
+            const res = await fetch('/api/receivables', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            if (!res.ok) { this.error = 'Failed to save (' + res.status + ')'; return; }
+            this.sel = {}; this.parts = {};
+            this.form.description = ''; this.form.store = ''; this.form.total = null;
+            this.sheetOpen = false;
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async settle(id, settled) {
+            await fetch(`/api/receivables/${id}/settle`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settled }),
+            });
+            this.expanded = null;
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async del(id) {
+            if (!confirm('Delete this charge?')) return;
+            await fetch(`/api/receivables/${id}`, { method: 'DELETE' });
+            await Promise.all([this.loadRows(), this.loadSummary()]);
+        },
+        async addPerson() {
+            if (!this.newPerson.name.trim()) return;
+            const res = await fetch('/api/receivables/people', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: this.newPerson.name.trim() }),
+            });
+            if (res.ok) { this.newPerson = { name: '' }; await this.loadPeople(); }
+        },
+        formatAmount(a, currency = 'USD') {
+            return new Intl.NumberFormat(currency === 'BRL' ? 'pt-BR' : 'en-US',
+                { style: 'currency', currency }).format(parseFloat(a) || 0);
+        },
+    };
+}
+</script>
+{% endblock %}

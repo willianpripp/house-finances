@@ -1,0 +1,485 @@
+{% extends "phone/base.html" %}
+
+{% block title %}Income — {{ app_name }}{% endblock %}
+{% block ptitle %}Income{% endblock %}
+
+{% block content %}
+<div x-data="phoneIncome()" x-init="init()" class="space-y-3">
+
+    <!-- EXCHANGE RATE WIDGET -->
+    <div class="pcard" style="background: rgba(180, 83, 9, 0.06); border-color: rgba(180, 83, 9, 0.25);">
+        <div class="text-xs text-amber-900">
+            <template x-if="latestRate">
+                <span>
+                    Latest rate:
+                    <span class="font-semibold" x-text="`BRL ${Number(latestRate.effective).toFixed(4)}/USD`"></span>
+                    <span class="text-amber-700" x-text="`(commercial ${Number(latestRate.commercial).toFixed(4)} on ${latestRate.rate_date})`"></span>
+                </span>
+            </template>
+            <template x-if="!latestRate">
+                <span>No exchange rate recorded yet — add one for accurate USD conversion.</span>
+            </template>
+        </div>
+        <div class="flex items-center gap-2 mt-2">
+            <button @click="quickAddRate()" class="px-3 py-1.5 text-xs font-medium bg-amber-700 text-white rounded">
+                Add today's rate
+            </button>
+            <a href="/exchange-rates" class="px-3 py-1.5 text-xs font-medium border border-amber-700 text-amber-800 rounded">
+                Manage
+            </a>
+        </div>
+    </div>
+
+    <!-- TOTALS -->
+    <div class="pcard" x-show="Object.keys(result?.sum_by_currency || {}).length" x-cloak>
+        <template x-for="(s, c) in result?.sum_by_currency || {}" :key="c">
+            <div class="flex items-center justify-between text-sm py-0.5">
+                <span class="text-xs text-slate-500" x-text="c"></span>
+                <span class="font-semibold text-slate-900" x-text="formatAmount(s)"></span>
+            </div>
+        </template>
+    </div>
+
+    <!-- FILTERS -->
+    <div class="pcard">
+        <div class="grid grid-cols-3 gap-2">
+            <div>
+                <label class="block text-[10px] font-medium text-slate-500 mb-1">Year</label>
+                <select x-model.number="filters.year" @change="reload()"
+                        class="w-full border border-slate-300 rounded px-1.5 py-1.5 text-xs bg-white">
+                    <option value="">All</option>
+                    <template x-for="y in years" :key="y">
+                        <option :value="y" x-text="y"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-[10px] font-medium text-slate-500 mb-1">Month</label>
+                <select x-model.number="filters.month" @change="reload()"
+                        class="w-full border border-slate-300 rounded px-1.5 py-1.5 text-xs bg-white">
+                    <option value="">All</option>
+                    <template x-for="(name, idx) in monthNames" :key="idx">
+                        <option :value="idx + 1" x-text="name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-[10px] font-medium text-slate-500 mb-1">Source</label>
+                <select x-model="filters.source" @change="reload()"
+                        class="w-full border border-slate-300 rounded px-1.5 py-1.5 text-xs bg-white">
+                    <option value="">All</option>
+                    <template x-for="s in sources" :key="s.value">
+                        <option :value="s.value" x-text="s.label"></option>
+                    </template>
+                </select>
+            </div>
+        </div>
+        <div class="flex items-center justify-between mt-2">
+            <button @click="resetFilters()" class="text-xs text-slate-600">Reset filters</button>
+            <span x-show="loading" class="text-xs text-slate-400">Loading…</span>
+        </div>
+        <span x-show="errorMessage" class="text-xs text-rose-600 mt-1 block" x-text="errorMessage"></span>
+    </div>
+
+    <!-- LIST GROUPED BY MONTH -->
+    <template x-for="group in groupedRows()" :key="`${group.year}-${group.month}`">
+        <div class="pcard">
+            <div class="flex items-center justify-between mb-1">
+                <h3 class="text-xs font-semibold text-slate-700 uppercase tracking-wide"
+                    x-text="`${monthNames[group.month - 1]} ${group.year}`"></h3>
+                <div class="text-xs text-slate-500">
+                    <template x-for="(s, c) in group.sums" :key="c">
+                        <span class="ml-2">
+                            <span class="font-medium" x-text="c"></span>
+                            <span x-text="formatAmount(s)"></span>
+                        </span>
+                    </template>
+                </div>
+            </div>
+            <template x-for="e in group.entries" :key="e.id">
+                <div>
+                    <div class="prow" @click="expanded = expanded === e.id ? null : e.id">
+                        <span class="grow">
+                            <span class="text-sm font-medium text-slate-800" x-text="sourceLabel(e.source)"></span>
+                            <span class="block text-xs text-slate-500" x-show="e.exchange_rate_effective">
+                                Rate <span x-text="formatAmount(e.exchange_rate_effective)"></span>
+                                <span class="text-slate-400" x-text="`(${e.exchange_rate_date})`"></span>
+                            </span>
+                        </span>
+                        <span class="text-right shrink-0">
+                            <span class="block text-sm font-medium text-slate-900" x-text="formatAmount(e.amount)"></span>
+                            <span class="block text-[10px] text-slate-400" x-text="e.currency"></span>
+                        </span>
+                    </div>
+                    <div x-show="expanded === e.id" x-cloak class="flex gap-2 py-2 pl-2">
+                        <button @click="openEdit(e)" class="text-xs border border-blue-300 text-blue-700 rounded px-3 py-1.5">Edit</button>
+                        <button @click="del(e)" :disabled="deleting"
+                                class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5 disabled:opacity-50">Delete</button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </template>
+
+    <div x-show="!loading && (result?.entries || []).length === 0"
+         class="pcard py-8 text-center text-slate-500 text-sm">
+        No income entries match these filters.
+    </div>
+
+    <!-- ADD / EDIT bottom sheet -->
+    <div x-show="sheetOpen" x-cloak>
+        <div class="psheet-backdrop" @click="sheetOpen = false"></div>
+        <div class="psheet space-y-3">
+            <div class="flex items-center justify-between">
+                <div class="text-base font-semibold text-slate-900" x-text="formMode === 'create' ? 'Add entry' : 'Edit entry'"></div>
+                <button @click="sheetOpen = false" class="text-slate-500 text-xl leading-none px-2">✕</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Year</label>
+                    <select x-model.number="form.year" class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                        <template x-for="y in years" :key="y">
+                            <option :value="y" x-text="y"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Month</label>
+                    <select x-model.number="form.month" class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                        <template x-for="(name, idx) in monthNames" :key="idx">
+                            <option :value="idx + 1" x-text="name"></option>
+                        </template>
+                    </select>
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Source</label>
+                <select x-model="form.source" class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                    <template x-for="s in sources" :key="s.value">
+                        <option :value="s.value" x-text="s.label"></option>
+                    </template>
+                </select>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Amount</label>
+                    <input type="number" step="0.01" x-model.number="form.amount"
+                           class="w-full border border-slate-300 rounded px-2 py-2 text-sm text-right">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Currency</label>
+                    <select x-model="form.currency" class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white">
+                        <option value="USD">USD</option>
+                        <option value="BRL">BRL</option>
+                    </select>
+                </div>
+            </div>
+
+            <div x-show="formMode === 'create'">
+                <label class="block text-xs text-slate-500 mb-1">
+                    Rate <span class="text-slate-400 font-normal">(BRL only — optional override)</span>
+                </label>
+                <select @change="form.exchange_rate_id = parseInt($event.target.value) || null"
+                        class="w-full border border-slate-300 rounded px-2 py-2 text-sm bg-white"
+                        :disabled="form.currency !== 'BRL'">
+                    <option value="">(period default)</option>
+                    <template x-for="r in availableRates" :key="r.id">
+                        <option :value="r.id" :selected="r.id === form.exchange_rate_id"
+                                x-text="`${r.rate_date} — eff ${Number(r.effective).toFixed(4)}`"></option>
+                    </template>
+                </select>
+            </div>
+
+            <button @click="submitForm()" type="button"
+                    :disabled="(formMode === 'create' ? creating : saving) || !form.amount"
+                    :class="form.amount && !(formMode === 'create' ? creating : saving) ? 'bg-emerald-600' : 'bg-slate-300'"
+                    class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium disabled:opacity-40">
+                <template x-if="formMode === 'create'">
+                    <span x-text="creating ? 'Saving…' : 'Add'"></span>
+                </template>
+                <template x-if="formMode === 'edit'">
+                    <span x-text="saving ? 'Saving…' : 'Save'"></span>
+                </template>
+            </button>
+            <div class="text-sm text-rose-600" x-text="formError"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block fab %}
+<!-- Outside the page's x-data scope, so it talks to it via a window event. -->
+<button class="pfab" x-data @click="window.dispatchEvent(new CustomEvent('open-new-income'))" title="Add entry">+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SALARY_LABELS = {{ salary_labels | tojson }};
+
+function phoneIncome() {
+    const today = new Date();
+    return {
+        filters: {
+            year: today.getFullYear(),
+            month: '',
+            source: '',
+        },
+        years: [],
+        monthNames: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        // Salary labels are household config, injected by the route.
+        sources: [
+            {value: 'primary_salary', label: SALARY_LABELS.primary_salary},
+            {value: 'partner_salary', label: SALARY_LABELS.partner_salary},
+            {value: 'rents_brazil',   label: 'Rents (Brazil)'},
+            {value: 'extra_usd',      label: 'Extra (USD)'},
+            {value: 'extra_brl',      label: 'Extra (BRL)'},
+        ],
+        result: null,
+        latestRate: null,
+        availableRates: [],
+        loading: false,
+        creating: false,
+        saving: false,
+        deleting: false,
+        expanded: null,
+        errorMessage: '',
+        formError: '',
+        sheetOpen: false,
+        formMode: 'create',
+        form: {
+            id: null,
+            year: today.getFullYear(),
+            month: today.getMonth() + 1,
+            source: 'primary_salary',
+            amount: null,
+            currency: 'USD',
+            exchange_rate_id: null,
+        },
+
+        async init() {
+            const y = today.getFullYear();
+            this.years = [y - 2, y - 1, y, y + 1];
+            window.addEventListener('open-new-income', () => { this.openCreate(); });
+            await Promise.all([this.reload(), this.loadLatestRate(), this.loadAvailableRates()]);
+        },
+
+        async loadAvailableRates() {
+            try {
+                const res = await fetch('/api/exchange-rates');
+                this.availableRates = await res.json();
+            } catch (e) {
+                this.availableRates = [];
+            }
+        },
+
+        async loadLatestRate() {
+            try {
+                const res = await fetch('/api/exchange-rates');
+                const rows = await res.json();
+                this.latestRate = rows.length ? rows[0] : null;
+            } catch (e) {
+                this.latestRate = null;
+            }
+        },
+
+        async quickAddRate() {
+            const commercialStr = prompt(
+                "Today's commercial BRL/USD rate?\n\nSpread (1.5%) and IOF (1.1%) will be applied automatically.\nEffective rate is computed from these.",
+                this.latestRate ? Number(this.latestRate.commercial).toFixed(4) : ''
+            );
+            if (commercialStr === null) return;
+            const commercial = parseFloat(commercialStr);
+            if (!commercial || commercial <= 0) {
+                alert('Invalid rate.');
+                return;
+            }
+            const t = new Date();
+            const dateStr = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+            try {
+                const res = await fetch('/api/exchange-rates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rate_date: dateStr, commercial }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                await this.loadLatestRate();
+            } catch (e) {
+                alert(`Failed to add rate: ${e.message}`);
+            }
+        },
+
+        sourceLabel(value) {
+            return this.sources.find(s => s.value === value)?.label || value;
+        },
+
+        buildQuery() {
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(this.filters)) {
+                if (v !== '' && v !== null && v !== undefined) {
+                    params.set(k, v);
+                }
+            }
+            return params.toString();
+        },
+
+        async reload() {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch('/api/income?' + this.buildQuery());
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.result = await res.json();
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        groupedRows() {
+            if (!this.result?.entries) return [];
+            const groups = new Map();
+            for (const e of this.result.entries) {
+                const key = `${e.year}-${e.month}`;
+                if (!groups.has(key)) {
+                    groups.set(key, {year: e.year, month: e.month, entries: [], sums: {}});
+                }
+                const g = groups.get(key);
+                g.entries.push(e);
+                g.sums[e.currency] = (parseFloat(g.sums[e.currency] || 0) + parseFloat(e.amount)).toFixed(2);
+            }
+            return Array.from(groups.values());
+        },
+
+        resetFilters() {
+            this.filters = {year: '', month: '', source: ''};
+            this.reload();
+        },
+
+        openCreate() {
+            this.formMode = 'create';
+            this.formError = '';
+            this.form = {
+                id: null,
+                year: today.getFullYear(),
+                month: today.getMonth() + 1,
+                source: 'primary_salary',
+                amount: null,
+                currency: 'USD',
+                exchange_rate_id: null,
+            };
+            this.sheetOpen = true;
+        },
+
+        openEdit(e) {
+            this.formMode = 'edit';
+            this.formError = '';
+            this.expanded = null;
+            this.form = {
+                id: e.id, year: e.year, month: e.month,
+                source: e.source, amount: parseFloat(e.amount), currency: e.currency,
+                exchange_rate_id: null,
+            };
+            this.sheetOpen = true;
+        },
+
+        async submitForm() {
+            if (this.formMode === 'create') await this.createEntry();
+            else await this.saveEdit();
+        },
+
+        async createEntry() {
+            this.creating = true;
+            this.formError = '';
+            try {
+                const res = await fetch('/api/income', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        year: this.form.year,
+                        month: this.form.month,
+                        source: this.form.source,
+                        amount: this.form.amount,
+                        currency: this.form.currency,
+                        exchange_rate_id: this.form.exchange_rate_id,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.sheetOpen = false;
+                await this.reload();
+                await this.loadAvailableRates();
+            } catch (e) {
+                this.formError = e.message;
+            } finally {
+                this.creating = false;
+            }
+        },
+
+        async saveEdit() {
+            this.saving = true;
+            this.formError = '';
+            try {
+                const res = await fetch(`/api/income/${this.form.id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        year: this.form.year,
+                        month: this.form.month,
+                        source: this.form.source,
+                        amount: this.form.amount,
+                        currency: this.form.currency,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.sheetOpen = false;
+                await this.reload();
+            } catch (e) {
+                this.formError = e.message;
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        async del(e) {
+            const label = `${this.monthNames[e.month - 1]} ${e.year} · ${this.sourceLabel(e.source)} · ${this.formatAmount(e.amount)} ${e.currency}`;
+            if (!confirm(`Delete income entry?\n\n${label}\n\nThis cannot be undone.`)) return;
+            this.deleting = true;
+            this.errorMessage = '';
+            try {
+                const res = await fetch(`/api/income/${e.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.expanded = null;
+                await this.reload();
+            } catch (err) {
+                this.errorMessage = err.message;
+            } finally {
+                this.deleting = false;
+            }
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === '') return '';
+            const n = parseFloat(amount);
+            const sign = n < 0 ? '-' : '';
+            return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+    }
+}
+</script>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

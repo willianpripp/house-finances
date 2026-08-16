@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+
+{% block title %}Assets — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="assetsPage()" x-init="init()">
+    <div class="flex items-start justify-between mb-6 gap-4 flex-wrap">
+        <div>
+            <h2 class="text-2xl font-semibold text-slate-900">Assets</h2>
+            <p class="text-slate-600 mt-1 text-sm max-w-2xl">
+                Material assets tracked separately from cash savings/debts. Update the value once a year
+                or when something major changes (sale, accident, market shift).
+            </p>
+        </div>
+        <button @click="openCreate()"
+                class="px-3 py-2 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">
+            + Add asset
+        </button>
+    </div>
+
+    <!-- TOTALS -->
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        <div class="bg-white border border-slate-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">Assets total (USD)</div>
+            <div class="text-2xl font-semibold text-slate-900" x-text="formatUsd(totalUsd)"></div>
+            <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(totalUsd)"></div>
+            <div class="text-xs text-slate-500" x-text="`${assets.length} item(s)`"></div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-md p-3">
+            <div class="text-xs uppercase font-medium text-slate-600 tracking-wide">FX (effective today)</div>
+            <div class="text-2xl font-semibold text-slate-900" x-text="effectiveRate || '—'"></div>
+            <div class="text-xs text-slate-500" x-text="effectiveDate || ''"></div>
+        </div>
+        <div class="bg-violet-50 border border-violet-200 rounded-md p-3 col-span-2 md:col-span-1">
+            <div class="text-xs uppercase font-medium text-violet-700 tracking-wide">Tip</div>
+            <div class="text-xs text-violet-900 mt-1">
+                Net Worth (Monthly/Annual reports) stays liquid: savings − debt.
+                <span class="font-medium">Total Worth = Net Worth + Assets</span> and is shown next to it on the reports.
+            </div>
+        </div>
+    </div>
+
+    <!-- LIST -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-slate-100 text-slate-700 text-left">
+                    <th class="px-3 py-2 font-medium">Name</th>
+                    <th class="px-3 py-2 font-medium">Kind</th>
+                    <th class="px-3 py-2 font-medium">Location</th>
+                    <th class="px-3 py-2 font-medium">Acquired</th>
+                    <th class="px-3 py-2 font-medium text-right">Value</th>
+                    <th class="px-3 py-2 font-medium">Last valued</th>
+                    <th class="px-3 py-2 font-medium">Service</th>
+                    <th class="px-3 py-2 font-medium text-right w-28">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="a in assets" :key="a.id">
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="px-3 py-2">
+                            <div class="font-medium text-slate-900" x-text="a.name"></div>
+                            <div class="text-xs text-slate-500 truncate max-w-md" :title="a.notes" x-text="a.notes"></div>
+                        </td>
+                        <td class="px-3 py-2">
+                            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                  :class="kindBadge(a.kind)" x-text="a.kind"></span>
+                        </td>
+                        <td class="px-3 py-2 text-slate-700" x-text="a.location || '—'"></td>
+                        <td class="px-3 py-2 text-slate-700" x-text="a.acquired_date || '—'"></td>
+                        <td class="px-3 py-2 text-right font-medium text-slate-900 whitespace-nowrap">
+                            <div>
+                                <span x-text="formatAmount(a.current_value)"></span>
+                                <span class="text-xs text-slate-400 ml-1" x-text="a.currency"></span>
+                            </div>
+                            <div class="text-[10px] text-slate-400 font-mono" x-text="formatCounterCurrency(a)"></div>
+                        </td>
+                        <td class="px-3 py-2 text-slate-600 text-xs" x-text="a.last_valued_date || '—'"></td>
+                        <td class="px-3 py-2 text-xs">
+                            <div class="text-slate-600" x-show="a.last_service_date || a.next_service_due_date">
+                                <span x-show="a.last_service_date">Last: <span x-text="a.last_service_date"></span></span>
+                            </div>
+                            <div :class="serviceDueClass(a)" x-show="a.next_service_due_date">
+                                <span x-text="`Next: ${a.next_service_due_date}`"></span>
+                            </div>
+                            <span class="text-slate-300" x-show="!a.last_service_date && !a.next_service_due_date">—</span>
+                        </td>
+                        <td class="px-3 py-2 text-right space-x-2">
+                            <button @click="openEdit(a)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                            <button @click="askDelete(a)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="!loading && assets.length === 0">
+                    <td colspan="8" class="px-3 py-8 text-center text-slate-500 text-sm">
+                        No assets yet. Click <em>+ Add asset</em> to track the car or anything else of value.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p x-show="errorMessage" class="mt-4 text-sm text-rose-600" x-text="errorMessage"></p>
+
+    <!-- CREATE / EDIT MODAL -->
+    <div x-show="modal.open" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+         @keydown.escape.window="modal.open = false">
+        <div class="bg-white rounded-lg shadow-xl border border-slate-200 max-w-lg w-full">
+            <div class="px-6 py-4 border-b border-slate-200">
+                <h3 class="text-lg font-semibold text-slate-900"
+                    x-text="modal.id ? 'Edit asset' : 'Add asset'"></h3>
+            </div>
+            <div class="px-6 py-4 grid grid-cols-2 gap-3 text-sm">
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Name</label>
+                    <input type="text" x-model="modal.name"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Kind</label>
+                    <select x-model="modal.kind"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="VEHICLE">Vehicle</option>
+                        <option value="PROPERTY">Property</option>
+                        <option value="ELECTRONICS">Electronics</option>
+                        <option value="JEWELRY">Jewelry</option>
+                        <option value="OTHER">Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Location</label>
+                    <input type="text" x-model="modal.location"
+                           placeholder="e.g. Home"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Value</label>
+                    <input type="number" step="0.01" x-model.number="modal.current_value"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm text-right">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Currency</label>
+                    <select x-model="modal.currency"
+                            class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                        <option value="USD">USD</option>
+                        <option value="BRL">BRL</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Acquired date</label>
+                    <input type="date" x-model="modal.acquired_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Last valued</label>
+                    <input type="date" x-model="modal.last_valued_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Last service</label>
+                    <input type="date" x-model="modal.last_service_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Next service due</label>
+                    <input type="date" x-model="modal.next_service_due_date"
+                           class="w-full border border-slate-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Notes</label>
+                    <textarea x-model="modal.notes" rows="2"
+                              placeholder="e.g. valuation guide range, mileage, condition"
+                              class="w-full border border-slate-300 rounded px-2 py-1 text-sm"></textarea>
+                </div>
+            </div>
+            <p x-show="modal.error" class="mx-6 mb-2 text-sm text-rose-600" x-text="modal.error"></p>
+            <div class="px-6 py-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button @click="modal.open = false"
+                        class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50">Cancel</button>
+                <button @click="save()"
+                        :disabled="modal.busy || !modal.name || !modal.current_value"
+                        class="px-3 py-1.5 text-sm rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50">
+                    <span x-show="!modal.busy">Save</span>
+                    <span x-show="modal.busy">Saving…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE CONFIRMATION -->
+    <div x-show="confirmDelete" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+        <div class="bg-white rounded-lg shadow-xl border border-slate-200 max-w-md w-full p-6">
+            <h3 class="text-lg font-semibold text-slate-900 mb-2">Delete asset?</h3>
+            <p class="text-sm text-slate-600 mb-4">
+                Removing <span class="font-medium" x-text="confirmDelete?.name"></span>
+                will subtract <span class="font-medium" x-text="formatAmount(confirmDelete?.current_value)"></span>
+                <span x-text="confirmDelete?.currency"></span> from your Total Worth.
+            </p>
+            <div class="flex justify-end gap-2">
+                <button @click="confirmDelete = null"
+                        class="px-3 py-1.5 text-sm border border-slate-300 rounded-md hover:bg-slate-50">Cancel</button>
+                <button @click="doDelete()"
+                        class="px-3 py-1.5 text-sm rounded-md bg-rose-600 text-white font-medium hover:bg-rose-700">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function assetsPage() {
+    return {
+        assets: [],
+        loading: false,
+        errorMessage: '',
+        confirmDelete: null,
+        effectiveRate: '',
+        effectiveDate: '',
+        modal: {
+            open: false, busy: false, error: '',
+            id: null, name: '', kind: 'VEHICLE', location: '',
+            acquired_date: '', current_value: '', currency: 'USD',
+            last_valued_date: '',
+            last_service_date: '', next_service_due_date: '',
+            notes: '',
+        },
+
+        async init() {
+            await Promise.all([this.reload(), this.loadRate()]);
+        },
+
+        get totalUsd() {
+            const rate = parseFloat(this.effectiveRate) || 1;
+            return this.assets.reduce((sum, a) => {
+                const v = parseFloat(a.current_value) || 0;
+                return sum + (a.currency === 'USD' ? v : v / rate);
+            }, 0);
+        },
+
+        async reload() {
+            this.loading = true;
+            try {
+                const res = await fetch('/api/assets');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.assets = await res.json();
+            } catch (e) {
+                this.errorMessage = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async loadRate() {
+            const res = await fetch('/api/exchange-rates?limit=1');
+            if (!res.ok) return;
+            const data = await res.json();
+            const r = data.rates?.[0] || data[0];
+            if (r) {
+                this.effectiveRate = parseFloat(r.effective).toFixed(4);
+                this.effectiveDate = r.rate_date;
+            }
+        },
+
+        openCreate() {
+            this.modal = {
+                open: true, busy: false, error: '',
+                id: null, name: '', kind: 'VEHICLE', location: '',
+                acquired_date: '', current_value: '', currency: 'USD',
+                last_valued_date: new Date().toISOString().slice(0, 10),
+                last_service_date: '', next_service_due_date: '',
+                notes: '',
+            };
+        },
+
+        openEdit(a) {
+            this.modal = {
+                open: true, busy: false, error: '',
+                id: a.id, name: a.name, kind: a.kind,
+                location: a.location || '',
+                acquired_date: a.acquired_date || '',
+                current_value: a.current_value, currency: a.currency,
+                last_valued_date: a.last_valued_date || '',
+                last_service_date: a.last_service_date || '',
+                next_service_due_date: a.next_service_due_date || '',
+                notes: a.notes || '',
+            };
+        },
+
+        async save() {
+            this.modal.busy = true;
+            this.modal.error = '';
+            const body = {
+                name: this.modal.name,
+                kind: this.modal.kind,
+                location: this.modal.location || null,
+                acquired_date: this.modal.acquired_date || null,
+                current_value: this.modal.current_value,
+                currency: this.modal.currency,
+                last_valued_date: this.modal.last_valued_date || null,
+                last_service_date: this.modal.last_service_date || null,
+                next_service_due_date: this.modal.next_service_due_date || null,
+                notes: this.modal.notes || null,
+            };
+            try {
+                const url = this.modal.id ? `/api/assets/${this.modal.id}` : '/api/assets';
+                const method = this.modal.id ? 'PATCH' : 'POST';
+                const res = await fetch(url, {
+                    method,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.modal.open = false;
+                await this.reload();
+            } catch (e) {
+                this.modal.error = e.message;
+            } finally {
+                this.modal.busy = false;
+            }
+        },
+
+        askDelete(a) { this.confirmDelete = a; },
+
+        async doDelete() {
+            if (!this.confirmDelete) return;
+            try {
+                const res = await fetch(`/api/assets/${this.confirmDelete.id}`, {method: 'DELETE'});
+                if (!res.ok && res.status !== 204) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                this.confirmDelete = null;
+                await this.reload();
+            } catch (e) {
+                this.errorMessage = e.message;
+            }
+        },
+
+        serviceDueClass(a) {
+            if (!a.next_service_due_date) return 'text-slate-500';
+            const due = new Date(a.next_service_due_date);
+            const now = new Date();
+            const daysAway = Math.round((due - now) / 86400000);
+            if (daysAway < 0) return 'text-rose-700 font-medium';      // overdue
+            if (daysAway <= 30) return 'text-amber-700 font-medium';    // due within 30d
+            return 'text-slate-600';
+        },
+
+        kindBadge(k) {
+            return {
+                VEHICLE:     'bg-amber-100 text-amber-800',
+                PROPERTY:    'bg-emerald-100 text-emerald-800',
+                ELECTRONICS: 'bg-sky-100 text-sky-800',
+                JEWELRY:     'bg-pink-100 text-pink-800',
+                OTHER:       'bg-slate-100 text-slate-700',
+            }[k] || 'bg-slate-100 text-slate-700';
+        },
+
+        formatAmount(n) {
+            if (n === null || n === undefined || n === '') return '';
+            return parseFloat(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        },
+        formatUsd(n) {
+            if (n === null || n === undefined) return '$0.00';
+            return '$' + parseFloat(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        },
+        formatBrl(usdValue) {
+            const rate = parseFloat(this.effectiveRate);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(usdValue);
+            if (Number.isNaN(n)) return '';
+            const brl = n * rate;
+            const sign = brl < 0 ? '-' : '';
+            return `${sign}R$ ${Math.abs(brl).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+        formatCounterCurrency(a) {
+            const rate = parseFloat(this.effectiveRate);
+            if (!rate || Number.isNaN(rate)) return '';
+            const n = parseFloat(a.current_value);
+            if (Number.isNaN(n)) return '';
+            // USD-valued -> show BRL equivalent; BRL-valued -> show USD equivalent.
+            if (a.currency === 'USD') {
+                return `≈ R$ ${(n * rate).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+            return `≈ $${(n / rate).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        },
+    };
+}
+</script>
+{% endblock %}

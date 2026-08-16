@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+
+{% block title %}Guide — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+    <!-- HEADER -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+                <h2 class="text-2xl font-semibold text-slate-900">House Finances</h2>
+                <p class="text-slate-600 mt-1">Self-hosted household finance manager for a two-currency household (USD and BRL). Reports are recomputed from the ledger on every read, so history stays accurate, and the household itself (members, salary levels, statement keywords) is configuration in the database rather than code.</p>
+            </div>
+            <div class="flex items-center gap-3 text-sm">
+                <span class="text-slate-700 font-medium">Database</span>
+                {% if db_ok %}
+                <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    Connected
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-100 text-rose-800">
+                    <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                    {{ db_message }}
+                </span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- MONTHLY ROUTINE -->
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-6">
+        <h3 class="text-lg font-semibold text-amber-900 mb-3">The monthly routine</h3>
+        <p class="text-sm text-amber-900 mb-4">
+            The system does the math. You mostly hand it statements and confirm what it proposes.
+        </p>
+        <ol class="text-sm text-amber-900 space-y-2 list-decimal list-inside">
+            <li>
+                <strong>Start on <a href="/connections" class="underline font-medium">/connections</a></strong> if any account is linked to a bank-sync provider. Balances refresh on their own; for transactions, open <em>Review</em> per account, check the rows and <em>Commit</em>.
+            </li>
+            <li>
+                <strong>Drop the bank-checking statement</strong> on <a href="/imports" class="underline font-medium">/imports</a>. Each line is classified (salary, credit-card payment, internal transfer, tax, real spending, or a match against a bill already recorded) and shown in a preview. On <em>Commit</em>, withholdings reconcile, the balance snapshot lands, and card payments dedupe.
+            </li>
+            <li>
+                <strong>Drop each credit-card statement</strong> on the same page. The filename decides the parser, and the account you select shows the pattern its own parser expects. Review the preview, set the owner per row, commit.
+            </li>
+            <li>
+                <strong>Open <a href="/reports/monthly" class="underline font-medium">/reports/monthly</a></strong> for the month that closed and use <em>Roll fixed to next month</em> to carry the recurring series forward. Anything past its contract end date shows in rose and does not roll.
+            </li>
+            <li>
+                <strong>Add what no statement carries</strong> (cash, transfers between people, one-off bills) on <a href="/transactions" class="underline font-medium">/transactions</a> with <em>+ Add</em>, and set the recurrence <em>Type</em>:
+                <ul class="list-disc list-inside ml-5 mt-1 text-amber-800">
+                    <li><strong>Indefinite</strong>: month to month with no end (gym, streaming, fiber).</li>
+                    <li><strong>Contract</strong>: fixed term with an end date (lease, insurance, a prepaid year). Rollover stops at the end date and the warnings page announces the renewal ahead of time.</li>
+                    <li><strong>Installment</strong>: a financed purchase split into N (car loan, a financed handset).</li>
+                    <li><strong>Extra Principal</strong>: an extra payment against the car loan, no interest. <em>Adding one debits the loan balance on /debts.</em></li>
+                </ul>
+            </li>
+        </ol>
+    </div>
+
+    <!-- HOW DATA GETS IN -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">How data gets in</h3>
+        <dl class="grid md:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+            <div>
+                <dt class="font-medium text-slate-800">Preview, then commit</dt>
+                <dd class="text-slate-600 mt-0.5">Every write-heavy path works the same way: it renders exactly what it is about to do and waits for you. Statement imports, provider reviews, fixed-expense rollover and bulk recategorization all stop at a preview.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Credit-card statements</dt>
+                <dd class="text-slate-600 mt-0.5">CSV or PDF on /imports. The filename picks the parser, the categorizer resolves each line to a merchant and category, and merchants it has never seen are flagged as "would create" before anything is written.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Bank-checking statements</dt>
+                <dd class="text-slate-600 mt-0.5">PDF or CSV on /imports. Most lines on a checking statement are not new spending, so the classifier keeps only what belongs in the ledger and turns the rest into side effects: a card balance falls, a balance snapshot is written, withholdings reconcile against the deposit.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Paste</dt>
+                <dd class="text-slate-600 mt-0.5">For the days between statements, paste the recent-activity view from internet banking or a card portal into the same preview. A paste never writes a balance snapshot, which is reserved for a closed statement period.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Bank sync (optional)</dt>
+                <dd class="text-slate-600 mt-0.5">Accounts can be linked to a provider on /connections: Plaid for US accounts, Pluggy for BR ones. Balances refresh automatically (on boot and on demand); transactions still come in per account through Review and Commit. Leave both unconfigured and every other page works unchanged.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">One source per account</dt>
+                <dd class="text-slate-600 mt-0.5">An account fed by a provider rejects manual statement imports with a 409. Two sources for the same account would double count, and the deduplication key differs between them.</dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- RULES WORTH KNOWING -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">Rules worth knowing</h3>
+        <dl class="grid md:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+            <div>
+                <dt class="font-medium text-slate-800">Currency follows the payment method</dt>
+                <dd class="text-slate-600 mt-0.5">A transaction's currency is always its payment method's currency. A Brazilian purchase paid on a USD card is a USD transaction; conversion happens at report time, never at storage.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">History stays accurate</dt>
+                <dd class="text-slate-600 mt-0.5">Monthly and annual totals are recalculated on every read, so fixing an old row fixes the past. Exchange rates are the opposite: one immutable row per date, never overwritten, so each month keeps the rate that was actually in force.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Re-importing is safe</dt>
+                <dd class="text-slate-600 mt-0.5">A candidate row is matched on date, amount and account, deliberately ignoring the merchant name, so importing the same statement twice cannot double count even after you change a categorization rule. Provider rows dedupe on the provider's own transaction id.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Salary lags by one month</dt>
+                <dd class="text-slate-600 mt-0.5">A paycheck deposited at the end of a month funds the month that follows, and that is the month it is recorded under. Enter the salary for the month it funds; the importer already targets it.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Pay levels, not a single figure</dt>
+                <dd class="text-slate-600 mt-0.5">Gross pay per member is a schedule of levels, each starting at a given month. A raise is a new level; editing an old one would stop past months from reconciling against the gross that was in force. Withholdings are what varies month to month, and the checking importer adjusts them so the net matches the real deposit.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Fixed-expense rollover</dt>
+                <dd class="text-slate-600 mt-0.5">Rolling a month forward copies the installment series and the withholding placeholders into the next month. Recurring bills that arrive on a statement (rent, utilities, taxes) come from the import instead, so rollover never competes with them.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Balances are snapshots</dt>
+                <dd class="text-slate-600 mt-0.5">Account balances are point-in-time rows written by the importers, not a running total. Card debt is derived on read: the last recorded balance plus everything charged to that card since. Future-dated rows are excluded, so a bill already projected for next week never inflates today's debt.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Receivables</dt>
+                <dd class="text-slate-600 mt-0.5">Money owed to you and money you owe, tracked per person and per currency, so a shared dinner in USD and a favour in BRL are never netted against each other. One charge split across several people keeps them grouped.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">What /warnings checks</dt>
+                <dd class="text-slate-600 mt-0.5">A short-horizon overdraft forecast per checking account (upcoming fixed bills, card autopays and expected deposits walked against the current balance), contracts and installment series about to end, statements due for import, and cards with no account linked to pay them from.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-slate-800">Net worth vs total worth</dt>
+                <dd class="text-slate-600 mt-0.5">Net worth is savings minus debts, the cash position. Total worth adds the material assets tracked on /assets, which are revalued by hand about once a year.</dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- PAGES TOUR -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">Pages</h3>
+        <div class="grid md:grid-cols-2 gap-4 text-sm">
+            <a href="/reports/monthly" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/reports/monthly</div>
+                <div class="text-slate-600 mt-1">Income buckets, spending by category, surplus, and the roll-fixed action. Opens on the most recent month that has data and is not in the future; totals are always live.</div>
+            </a>
+            <a href="/reports/annual" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/reports/annual</div>
+                <div class="text-slate-600 mt-1">Year-to-date aggregates plus four charts: net worth, surplus, fixed/variable/taxes stacked, and the top categories.</div>
+            </a>
+            <a href="/transactions" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/transactions</div>
+                <div class="text-slate-600 mt-1">List, filter, edit, delete. Split a charge into N installments. Add manual entries and set the recurrence type per row. The table renders in pages; filters and totals still run over the full set.</div>
+            </a>
+            <a href="/connections" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/connections</div>
+                <div class="text-slate-600 mt-1">Bank-sync links and the accounts each one feeds. Refresh balances, review pending transactions per account, and see what is missing when a provider is not configured.</div>
+            </a>
+            <a href="/income" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/income</div>
+                <div class="text-slate-600 mt-1">Salaries for both members, rents received abroad, and extras. A per-entry exchange-rate override is available.</div>
+            </a>
+            <a href="/savings" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/savings</div>
+                <div class="text-slate-600 mt-1">Per-account balance snapshots with month-over-month movement. The importers write here; you only edit when reality drifts.</div>
+            </a>
+            <a href="/debts" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/debts</div>
+                <div class="text-slate-600 mt-1">Card balances (derived live from the last snapshot plus later charges) and the car loan, with principal and interest per payment and a walking balance.</div>
+            </a>
+            <a href="/receivables" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/receivables</div>
+                <div class="text-slate-600 mt-1">Who owes you and who you owe, per person and per currency, open and settled. Split one charge across several people in a single step.</div>
+            </a>
+            <a href="/assets" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/assets</div>
+                <div class="text-slate-600 mt-1">Material assets tracked apart from cash, revalued by hand about once a year. They are what turns net worth into total worth in the report headers.</div>
+            </a>
+            <a href="/warnings" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/warnings</div>
+                <div class="text-slate-600 mt-1">Overdraft forecast, contracts and installments coming to an end, statement and payment alerts, and the accounts whose configuration leaves a gap in the forecast.</div>
+            </a>
+            <a href="/imports" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/imports</div>
+                <div class="text-slate-600 mt-1">Drop a CSV or PDF statement, or paste recent activity. The preview classifies every row, with a per-row checkbox and a split-into-N action. Desktop only.</div>
+            </a>
+            <a href="/rules" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/rules</div>
+                <div class="text-slate-600 mt-1">Keyword to merchant and category mapping. The recategorize action rewrites past variable transactions when you fix a rule. Desktop only.</div>
+            </a>
+            <a href="/exchange-rates" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/exchange-rates</div>
+                <div class="text-slate-600 mt-1">One commercial rate per date. The effective rate adds the usual bank spread and tax on top, computed for you. Existing rows are immutable.</div>
+            </a>
+            <a href="/docs" class="group block border border-slate-200 rounded-md p-3 hover:border-blue-300 hover:bg-blue-50 transition">
+                <div class="font-medium text-blue-700 group-hover:underline">/docs</div>
+                <div class="text-slate-600 mt-1">Swagger UI for the JSON API, which is the whole app: every page here is a client of it. Useful for scripting or auditing.</div>
+            </a>
+        </div>
+    </div>
+
+    <!-- HOW THE IMPORTER PICKS A PARSER -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">How the importer picks a parser</h3>
+        <p class="text-sm text-slate-600 mb-4">
+            Statement layouts differ per issuer, so the importer keeps one parser per layout and chooses between them by reading the filename. Nothing else about the file is inspected before parsing, which means the name you save the download under is what routes it.
+        </p>
+        <ul class="text-sm text-slate-700 space-y-2 list-disc list-inside">
+            <li>Select the account on <a href="/imports" class="text-blue-700 underline">/imports</a> first. If it has a parser, the filename pattern that parser expects appears right under the dropdown, together with the file types it reads.</li>
+            <li>An account with no parser is still perfectly usable: paste the activity when its layout is supported, or add the rows on <a href="/transactions" class="text-blue-700 underline">/transactions</a>. The hint says which of the two applies.</li>
+            <li>A checking pattern always wins over a card pattern, so an account that issues both under one brand is read as the checking statement unless the filename says otherwise.</li>
+            <li>No match at all means the upload is rejected before anything is written. Rename the file to carry the keyword from the hint and drop it again.</li>
+        </ul>
+    </div>
+
+    <!-- PHONE -->
+    <div class="bg-slate-50 border border-slate-200 rounded-lg p-6">
+        <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-2">On a phone</h3>
+        <p class="text-sm text-slate-600">
+            Twelve of the screens have a phone-shaped template of their own: same routes, same API, a layout built for a thumb (bottom tab bar, cards instead of tables, sheets instead of modals). The choice lives in the <code>fin_ui</code> cookie, so the 📱 button up in this header and the "Desktop version" link at the foot of every phone screen switch either device to either version, and the choice sticks; with no cookie set, the user agent decides.
+        </p>
+        <p class="text-sm text-slate-600 mt-2">
+            The app ships a web manifest, so "Add to Home Screen" installs it as a standalone app. Imports, rules and this guide stay desktop only on purpose: dropping a PDF and editing keyword rules are desk work.
+        </p>
+    </div>
+</div>
+{% endblock %}
