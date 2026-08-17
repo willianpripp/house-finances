@@ -160,13 +160,13 @@ def latest_card_balance_live(
     )
     if row is None:
         return Decimal("0"), None
-    delta = _post_balance_delta(
+    delta = post_balance_delta(
         session, payment_method_id=payment_method_id, after=row.recorded_at, today=today
     )
     return Decimal(row.balance) + delta, row
 
 
-def _post_balance_delta(
+def post_balance_delta(
     session: Session, *, payment_method_id: int, after: datetime, today: date_type
 ) -> Decimal:
     """Sum of card transactions strictly after the latest balance row's date
@@ -240,7 +240,7 @@ def current_card_balances(session: Session) -> CardBalanceListResult:
     for b in items:
         currency_value = b.payment_method.currency.value
         recorded = Decimal(b.balance)
-        delta = _post_balance_delta(
+        delta = post_balance_delta(
             session,
             payment_method_id=b.payment_method_id,
             after=b.recorded_at,

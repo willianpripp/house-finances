@@ -377,6 +377,22 @@ def _compute_savings_at(session: Session, as_of: datetime, effective: Decimal) -
 
 
 def _compute_debt_at(session: Session, as_of: datetime, effective: Decimal) -> Decimal:
+    """Total debt as of `as_of`: cards (live-derived) plus the car loan.
+
+    `credit_card_balances` is a sparse snapshot, not a running total, so the
+    latest row at-or-before `as_of` is stale by whatever posted after it.
+    /debts and /warnings have derived past it since 2026-06-04; this report
+    did not, and the two disagreed by exactly the un-derived spending ($42.00
+    on 2026-08-17). Same derivation now, via the same helper, so there is one
+    definition of card debt rather than two.
+
+    The delta window is clamped to today: for the current month `as_of` is a
+    future end-of-month, and future-dated FIXED projections must not inflate
+    the figure (the clamp is what `post_balance_delta` already enforces for
+    /debts). Past months are unaffected — their `as_of` is already behind us.
+    """
+    from app.services.debts import post_balance_delta
+
     sub = (
         select(
             CreditCardBalance.payment_method_id,
@@ -395,9 +411,16 @@ def _compute_debt_at(session: Session, as_of: datetime, effective: Decimal) -> D
         )
         .join(PaymentMethod, PaymentMethod.id == CreditCardBalance.payment_method_id)
     ).all()
+    cutoff = min(as_of.date(), date_type.today())
     total = ZERO
     for ccb, currency in rows:
-        total += _to_usd(ccb.balance, currency.value, effective)
+        live = Decimal(ccb.balance) + post_balance_delta(
+            session,
+            payment_method_id=ccb.payment_method_id,
+            after=ccb.recorded_at,
+            today=cutoff,
+        )
+        total += _to_usd(live, currency.value, effective)
 
     car = session.scalar(
         select(CarLoanPayment)

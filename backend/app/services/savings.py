@@ -17,6 +17,14 @@ from sqlalchemy.orm import Session
 from app.models import Currency, ExchangeRate, SavingsSnapshot
 
 
+# A MoM percentage is only meaningful when the baseline it divides by is
+# itself meaningful. Below this fraction of the current balance the prior
+# month is effectively zero and the ratio reports the baseline's noise, not
+# the account's movement (R$1.00 -> R$800.00 rendered as "+79900%"). Such
+# rows get mom_pct=None and both UIs already fall back to an em dash.
+_MOM_MIN_BASELINE_RATIO = Decimal("0.01")
+
+
 @dataclass(frozen=True)
 class SavingsRow:
     id: int
@@ -159,7 +167,11 @@ def current_balances(session: Session) -> SavingsListResult:
         else:
             usd_eq = balance / effective if effective else balance
         prev = _latest_prev_month_balance(session, s.account_name, today=today)
-        if prev is not None and prev != 0:
+        if (
+            prev is not None
+            and prev != 0
+            and abs(prev) >= abs(balance) * _MOM_MIN_BASELINE_RATIO
+        ):
             mom_pct = ((balance - prev) / abs(prev)) * Decimal("100")
             mom_pct = mom_pct.quantize(Decimal("0.1"))
         else:
