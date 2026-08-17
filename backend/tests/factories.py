@@ -50,6 +50,11 @@ PARTNER_NAME = "Sam Costa"    # local salary, withholdings reconciled by the imp
 PRIMARY_SALARY = IncomeSource.PRIMARY_SALARY
 PARTNER_SALARY = IncomeSource.PARTNER_SALARY
 
+# Invented figures for a fictional household, deliberately not anyone's real
+# ones. Every assertion compares against these constants symbolically, so the
+# values carry no meaning beyond being distinguishable from each other. Keep it
+# that way: this file ships publicly, and a constant named CAR_INSTALLMENT set
+# to a real car payment discloses the payment and the loan in one line.
 PARTNER_GROSS = Decimal("3000.00")
 PARTNER_GROSS_AFTER_RAISE = Decimal("3300.00")  # exercises the salary_levels lookup
 PRIMARY_GROSS_FOREIGN = Decimal("9000.00")

@@ -76,12 +76,12 @@ def amount_matches_prior(prior: Transaction, activity_magnitude: Decimal) -> boo
     """Sanity check before propagating: the activity's magnitude must match
     the prior's recurring amount. Matches against `prior.amount` for flat
     monthly bills (Hulu $4.99 -> $4.99) OR `prior.installment_value` for
-    installment series (e.g. a phone financed over 24x: total $1,200.00 / per-installment $36
-    matches the $36 monthly debit). Tolerance is ±$1.
+    installment series (e.g. a device financed over 24x: total $1,200.00 /
+    per-installment $50 matches the $50 monthly debit). Tolerance is ±$1.
 
-    Without this check, history propagation mis-tags one-off car-loan extras
-    ($300 / $1500 / $2500) as if they were the parcela ($425.00) just
-    because they share merchant+payment_method."""
+    Without this check, history propagation mis-tags one-off extra principal
+    payments on a loan as if they were the regular instalment, just because
+    they share merchant+payment_method."""
     target = abs(activity_magnitude)
     if abs(Decimal(prior.amount) - target) <= AMOUNT_MATCH_TOLERANCE:
         return True

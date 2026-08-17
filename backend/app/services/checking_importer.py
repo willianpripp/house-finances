@@ -1007,8 +1007,8 @@ def _try_promote_from_history(
 
     # Amount sanity check: propagation is only valid when the activity's
     # magnitude matches the prior's recurring amount or installment_value.
-    # Otherwise we'd mis-tag e.g. a $300 car-loan extra as if it were the
-    # $425.00 parcela just because the merchant/payment_method matches.
+    # Otherwise we'd mis-tag e.g. an extra principal payment on a loan as if
+    # it were the regular instalment, just because merchant+method matches.
     if not amount_matches_prior(prior, a.amount):
         return 0, None
 

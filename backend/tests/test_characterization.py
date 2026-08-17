@@ -75,7 +75,9 @@ def test_monthly_report_totals(db):
     t = r.totals
 
     assert _partner_salary(r) == PARTNER_GROSS
-    # Foreign salary converts at the effective rate (the effective rate).
+    # Foreign salary converts at the effective rate, so the USD figure is
+    # PRIMARY_GROSS_FOREIGN divided by it. Asserted as a floor rather than an
+    # equality so the fixture rate can move without rewriting this line.
     assert _primary_salary(r) > Decimal("1700")
     assert t.gross_income_usd == _primary_salary(r) + _partner_salary(r)
 
