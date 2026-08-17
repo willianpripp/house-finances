@@ -19,9 +19,9 @@ from app.models import Currency, ExchangeRate, SavingsSnapshot
 
 # A MoM percentage is only meaningful when the baseline it divides by is
 # itself meaningful. Below this fraction of the current balance the prior
-# month is effectively zero and the ratio reports the baseline's noise, not
-# the account's movement (R$1.00 -> R$800.00 rendered as "+79900%"). Such
-# rows get mom_pct=None and both UIs already fall back to an em dash.
+# month is effectively zero and the ratio reports the baseline's noise rather
+# than the account's movement, which renders as an absurd five-digit
+# percentage. Such rows get mom_pct=None and both UIs fall back to an em dash.
 _MOM_MIN_BASELINE_RATIO = Decimal("0.01")
 
 

@@ -5,9 +5,8 @@ Plaid and Pluggy both re-fetch from the clean-start anchor on every commit
 deposit inside the window is presented again on each sync. The guard in
 `_record_extra_income` originally tested `plaid_transaction_id` alone; a Pluggy
 activity carries `pluggy_transaction_id` instead and fell through to the
-manual-paste ACCUMULATE branch. August 2026 EXTRA_BRL was created at 900.00
-by the 2026-08-14 sync and updated to 1,800.00 by the 2026-08-17 sync, whose
-window summed to 900.00 — the 08-02 R$900 Pix counted twice.
+manual-paste ACCUMULATE branch, so every re-sync added the window's deposits
+on top of the total it had already recorded.
 """
 from __future__ import annotations
 
@@ -57,15 +56,15 @@ def _existing(db) -> IncomeEntry:
 
 def test_pluggy_resync_leaves_the_month_total_untouched(db):
     pm = _brl_checking(db, "Pluggy Idempotency Checking")
-    _record_extra_income(db, _deposit("1500.00", pluggy_transaction_id="pg-1"), pm)
+    _record_extra_income(db, _deposit("900.00", pluggy_transaction_id="pg-1"), pm)
     db.flush()
-    assert Decimal(_existing(db).amount) == Decimal("1500.00")
+    assert Decimal(_existing(db).amount) == Decimal("900.00")
 
     # The same deposit comes back on the next sync, as it always will.
-    note = _record_extra_income(db, _deposit("1500.00", pluggy_transaction_id="pg-1"), pm)
+    note = _record_extra_income(db, _deposit("900.00", pluggy_transaction_id="pg-1"), pm)
     db.flush()
 
-    assert Decimal(_existing(db).amount) == Decimal("1500.00")
+    assert Decimal(_existing(db).amount) == Decimal("900.00")
     assert "Pluggy, idempotent" in note
 
 

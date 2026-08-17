@@ -382,9 +382,9 @@ def _compute_debt_at(session: Session, as_of: datetime, effective: Decimal) -> D
     `credit_card_balances` is a sparse snapshot, not a running total, so the
     latest row at-or-before `as_of` is stale by whatever posted after it.
     /debts and /warnings have derived past it since 2026-06-04; this report
-    did not, and the two disagreed by exactly the un-derived spending ($42.00
-    on 2026-08-17). Same derivation now, via the same helper, so there is one
-    definition of card debt rather than two.
+    did not, and the two disagreed by exactly the charges posted since each
+    card's last recorded balance. Same derivation now, via the same helper, so
+    there is one definition of card debt rather than two.
 
     The delta window is clamped to today: for the current month `as_of` is a
     future end-of-month, and future-dated FIXED projections must not inflate

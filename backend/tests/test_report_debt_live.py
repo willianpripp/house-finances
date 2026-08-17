@@ -3,9 +3,8 @@
 `credit_card_balances` records payment events and manual snapshots; new charges
 land in `transactions` and never push the row up. /debts and /warnings have
 derived past that since 2026-06-04, but `reports._compute_debt_at` kept reading
-the raw row, so the two disagreed by exactly the un-derived spending — caught on
-2026-08-17 as $42.00 between `total_debt_usd` (4,000.00) and
-`/api/debts/cards/current` + car loan (4,000.00).
+the raw row, so the report and the debts page disagreed by exactly the charges
+posted since each card's last recorded balance.
 """
 from __future__ import annotations
 

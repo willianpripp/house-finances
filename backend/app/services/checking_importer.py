@@ -1468,11 +1468,11 @@ def _record_extra_income(
     month_name = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[month - 1]
     if existing is not None:
         # Plaid AND Pluggy re-pull the full window since the clean-start anchor
-        # on every commit, so accumulating would inflate on re-sync (it once
-        # ballooned June EXTRA_USD to $9,000; Pluggy then repeated it on
-        # 2026-08-17, doubling a R$900 Pix into August EXTRA_BRL). For any
-        # provider-sourced row, leave the existing total untouched (idempotent).
-        # Manual paste keeps accumulating (multiple Pix in a month sum up).
+        # on every commit, so accumulating would inflate on re-sync: the same
+        # deposit is presented again every time and lands on top of a total
+        # that already contains it. Hit in production on both providers. For
+        # any provider-sourced row, leave the existing total untouched
+        # (idempotent). Manual paste keeps accumulating (multiple Pix sum up).
         provider = (
             "Plaid" if a.plaid_transaction_id is not None
             else "Pluggy" if a.pluggy_transaction_id is not None
