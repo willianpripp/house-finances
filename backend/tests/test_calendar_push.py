@@ -296,6 +296,9 @@ def test_created_false_is_a_success_not_a_failure(db, push_set, configured, monk
 
 
 def test_one_failing_post_does_not_abort_the_rest(db, push_set, configured, monkeypatch):
+    # A third source of our own: the failing POST must land mid-run, and that
+    # cannot depend on migration-seeded goals (the public schema seeds none).
+    _contract(db, ends=TODAY + timedelta(days=20))
     calls: list[dict] = []
 
     def responder(payload):
