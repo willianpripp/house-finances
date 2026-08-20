@@ -1,20 +1,31 @@
 """'A Receber' — informal debts between us and family/friends, both ways.
 
 OWED_TO_ME: money owed for charges put on our cards. The charge itself stays
-in the ledger as normal spending; these rows only track who owes what until
-they pay it back. Settling is the moment it effectively becomes extra income —
-for now we just mark it paid; auto-creating the income entry is a follow-up.
+in the ledger as normal spending; these rows track who owes what until they
+pay it back. Settling posts the payback to the ledger as a NEGATIVE
+transaction (a refund) that nets that spending back down to the household's
+own share. Deliberately not an income entry: that would inflate income and
+leave spending overstated by the same amount in every report of that month.
+The full argument, and the account/currency rules, are in
+`app/services/receivables.py`.
 
 I_OWE: someone else paid and we owe them our share. Nothing is in the ledger
-(the money never left our accounts), so settling here is bookkeeping only —
-the real expense is logged manually on /transactions when we pay them back.
+while the debt is open (the money never left our accounts), so settling posts
+the real expense, dated the day we paid the person back.
+
+Either direction, settling first looks for an already-imported transaction
+that plausibly IS the payback and links to it rather than writing a duplicate.
+The settle response says which happened (`created` / `linked` / `none`), and
+un-settling deletes a row we created while only unlinking an imported one.
 
 A split across N people is N rows sharing a group_id (the split math is done
-client-side and posted as a list of shares).
+client-side and posted as a list of shares). Each share settles on its own and
+gets its own ledger entry.
 """
 from __future__ import annotations
 
 import uuid
+from dataclasses import asdict
 from datetime import date as date_type
 from datetime import datetime
 from decimal import Decimal
@@ -26,6 +37,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Currency, Person, Receivable, ReceivableDirection
+from app.services import receivables as receivables_service
+from app.services.auth import current_user_id
 
 router = APIRouter(prefix="/api/receivables", tags=["receivables"])
 
@@ -73,10 +86,38 @@ class ReceivableOut(BaseModel):
     charge_date: date_type
     settled: bool
     settled_at: datetime | None
+    settled_transaction_id: int | None = None
+    settled_transaction_autocreated: bool = False
 
 
 class SettleIn(BaseModel):
     settled: bool = True
+    # The day the money actually moved. Defaults to today, which is the common
+    # case (marking it paid as it happens), but a payback that arrived last
+    # month has to land in last month's report, so it is settable.
+    settled_on: date_type | None = None
+
+
+class LedgerActionOut(BaseModel):
+    """What the settle/unsettle call did to the ledger.
+
+    `action` is one of created / linked / deleted / unlinked / none. The UI
+    shows it verbatim so the user can tell a fresh entry from a link to a bank
+    line they already imported."""
+
+    action: str
+    transaction_id: int | None = None
+    transaction_date: date_type | None = None
+    amount: Decimal | None = None
+    currency: str | None = None
+    account_name: str | None = None
+    category_name: str | None = None
+    reason: str | None = None
+
+
+class SettleOut(BaseModel):
+    receivable: ReceivableOut
+    ledger: LedgerActionOut
 
 
 class PersonSummaryOut(BaseModel):
@@ -131,6 +172,8 @@ def _to_out(r: Receivable) -> ReceivableOut:
         charge_date=r.charge_date,
         settled=r.settled,
         settled_at=r.settled_at,
+        settled_transaction_id=r.settled_transaction_id,
+        settled_transaction_autocreated=r.settled_transaction_autocreated,
     )
 
 
@@ -185,25 +228,49 @@ def create_receivable(payload: ReceivableCreateIn, db: Session = Depends(get_db)
     return [_to_out(r) for r in created]
 
 
-@router.patch("/{receivable_id}/settle", response_model=ReceivableOut)
+@router.patch("/{receivable_id}/settle", response_model=SettleOut)
 def settle_receivable(
-    receivable_id: int, payload: SettleIn, db: Session = Depends(get_db)
-) -> ReceivableOut:
+    receivable_id: int,
+    payload: SettleIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(current_user_id),
+) -> SettleOut:
+    """Mark paid (or reopen) AND move the ledger with it.
+
+    Settling posts the money that changed hands; reopening reverses that post.
+    The `ledger` half of the response is what the UI reports back, so the user
+    never has to go to /transactions to find out whether a row was created."""
     r = db.get(Receivable, receivable_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Receivable not found")
-    r.settled = payload.settled
-    r.settled_at = datetime.now() if payload.settled else None
+
+    if payload.settled:
+        settled_on = payload.settled_on or date_type.today()
+        action = receivables_service.post_settlement(db, r, settled_on, user_id)
+        r.settled = True
+        r.settled_at = datetime.now()
+    else:
+        action = receivables_service.reverse_settlement(db, r)
+        r.settled = False
+        r.settled_at = None
+
     db.commit()
     db.refresh(r)
-    return _to_out(r)
+    return SettleOut(
+        receivable=_to_out(r), ledger=LedgerActionOut(**asdict(action))
+    )
 
 
 @router.delete("/{receivable_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_receivable(receivable_id: int, db: Session = Depends(get_db)) -> Response:
+    """Deleting a settled receivable also reverses its ledger post, on the same
+    terms as un-settling: a row we created goes, an imported one stays. Leaving
+    an auto-created refund behind with nothing pointing at it would silently
+    skew the month it sits in."""
     r = db.get(Receivable, receivable_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Receivable not found")
+    receivables_service.reverse_settlement(db, r)
     db.delete(r)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

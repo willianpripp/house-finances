@@ -107,7 +107,10 @@
                     <span x-show="t.installment_total > 1 && t.installment_value" class="w-full text-xs text-slate-500"
                           x-text="'per installment: ' + formatAmount(t.installment_value) + (t.contract_end_date ? ' · ends ' + t.contract_end_date : '')"></span>
                     <button @click="startEdit(t)" class="text-xs border border-blue-300 text-blue-700 rounded px-3 py-1.5">Edit</button>
-                    <button x-show="t.installment_total === 1" @click="askSplit(t)"
+                    <!-- One writer per fact: Split rewrites the amount, which a
+                         provider-ingested row does not own. Edit stays: category,
+                         merchant and notes are still the human's. -->
+                    <button x-show="t.installment_total === 1 && !t.provider" @click="askSplit(t)"
                             class="text-xs border border-amber-300 text-amber-700 rounded px-3 py-1.5">Split</button>
                     <button @click="doDelete(t)" class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
                 </div>
@@ -138,17 +141,31 @@
                 <button @click="cancelEdit()" class="text-slate-500 text-xl leading-none px-2">✕</button>
             </div>
 
+            <!-- One writer per fact: those three fields belong to the provider's
+                 Review then Commit flow, so they are locked and left out of the
+                 PATCH body. -->
+            <p x-show="editing.provider" class="text-xs text-amber-700"
+               x-text="`${editing.provider} owns the date, amount and account on this row. Category, merchant and notes are yours.`"></p>
+
             <label class="block text-xs font-medium text-slate-600 mb-1">Date</label>
             <input type="date" x-model="editing.transaction_date"
+                   :disabled="!!editing.provider"
+                   :class="editing.provider ? 'bg-slate-100 text-slate-400' : ''"
                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
-            <select @change="editing.merchant_id = parseInt($event.target.value)"
+            <select @change="onMerchantSelect(editing, $event.target.value)"
                     class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                <option value="">Select…</option>
+                <option value="__new__" :selected="editing.merchant_id === null">+ New merchant…</option>
                 <template x-for="m in merchants" :key="m.id">
                     <option :value="m.id" :selected="m.id === editing.merchant_id" x-text="m.name"></option>
                 </template>
             </select>
+            <input x-show="editing.merchant_id === null" x-cloak
+                   type="text" x-model="editing.merchant_name"
+                   placeholder="New merchant name"
+                   class="w-full border border-emerald-400 bg-emerald-50 rounded px-3 py-2 text-sm">
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
             <select @change="editing.category_id = parseInt($event.target.value)"
@@ -160,9 +177,13 @@
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Payment Method</label>
             <select @change="editing.payment_method_id = parseInt($event.target.value)"
-                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
+                    :disabled="!!editing.provider"
+                    :class="editing.provider ? 'bg-slate-100 text-slate-400' : 'bg-white'"
+                    class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
                 <template x-for="pm in paymentMethods" :key="pm.id">
-                    <option :value="pm.id" :selected="pm.id === editing.payment_method_id" x-text="`${pm.name} (${pm.currency})`"></option>
+                    <option :value="pm.id" :disabled="!!pm.provider"
+                            :selected="pm.id === editing.payment_method_id"
+                            x-text="pmLabel(pm)"></option>
                 </template>
             </select>
 
@@ -186,6 +207,8 @@
                 <div class="flex-1">
                     <label class="block text-xs font-medium text-slate-600 mb-1">Amount</label>
                     <input type="number" step="0.01" x-model.number="editing.amount"
+                           :disabled="!!editing.provider"
+                           :class="editing.provider ? 'bg-slate-100 text-slate-400' : ''"
                            class="w-full border border-slate-300 rounded px-3 py-2 text-sm text-right">
                 </div>
             </div>
@@ -275,13 +298,18 @@
             </p>
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Merchant</label>
-            <select @change="newTxn.merchant_id = parseInt($event.target.value)"
+            <select @change="onMerchantSelect(newTxn, $event.target.value)"
                     class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
                 <option value="">Select…</option>
+                <option value="__new__" :selected="newTxn.merchant_id === null && newTxn.merchant_name !== null">+ New merchant…</option>
                 <template x-for="m in merchants" :key="m.id">
                     <option :value="m.id" :selected="m.id === newTxn.merchant_id" x-text="m.name"></option>
                 </template>
             </select>
+            <input x-show="newTxn.merchant_id === null && newTxn.merchant_name !== null" x-cloak
+                   type="text" x-model="newTxn.merchant_name"
+                   placeholder="New merchant name"
+                   class="w-full border border-emerald-400 bg-emerald-50 rounded px-3 py-2 text-sm">
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Category</label>
             <select @change="newTxn.category_id = parseInt($event.target.value)"
@@ -293,13 +321,20 @@
             </select>
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Payment</label>
+            <!-- One writer per fact: a provider-fed account is listed but not
+                 selectable, because its rows come from Review then Commit and a
+                 manual one would count the same spending twice. -->
             <select @change="newTxn.payment_method_id = parseInt($event.target.value)"
                     class="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white">
                 <option value="">Select…</option>
                 <template x-for="pm in paymentMethods" :key="pm.id">
-                    <option :value="pm.id" :selected="pm.id === newTxn.payment_method_id" x-text="pm.name + ' (' + pm.currency + ')'"></option>
+                    <option :value="pm.id" :disabled="!!pm.provider"
+                            :selected="pm.id === newTxn.payment_method_id"
+                            x-text="pmLabel(pm)"></option>
                 </template>
             </select>
+            <p x-show="providerPms().length" class="text-xs text-amber-700"
+               x-text="`Fed by a provider, so not selectable: ${providerPms().join(', ')}. Those rows come from Review then Commit in Connections.`"></p>
 
             <label class="block text-xs font-medium text-slate-600 mb-1">Description</label>
             <input type="text" x-model="newTxn.description"
@@ -424,6 +459,7 @@ function phoneTransactions() {
             this.newTxn = {
                 transaction_date: today.toISOString().slice(0, 10),
                 merchant_id: null,
+                merchant_name: null,
                 category_id: null,
                 payment_method_id: null,
                 amount: null,
@@ -455,10 +491,37 @@ function phoneTransactions() {
             }[kind] || 'bg-slate-100 text-slate-700';
         },
 
+        // One writer per fact (verbatim from desktop transactionsPage()).
+        pmLabel(pm) {
+            return pm.provider
+                ? `${pm.name} (${pm.currency}) fed by ${pm.provider}`
+                : `${pm.name} (${pm.currency})`;
+        },
+        providerPms() {
+            return this.paymentMethods.filter(pm => pm.provider).map(pm => pm.name);
+        },
+
+        // Merchant select shared by the create sheet and the edit sheet
+        // (verbatim from desktop transactionsPage()): "+ New merchant..."
+        // clears merchant_id and opens the name input; picking an existing
+        // merchant clears the name back out.
+        onMerchantSelect(target, value) {
+            if (value === '__new__') {
+                target.merchant_id = null;
+                target.merchant_name = target.merchant_name || '';
+            } else {
+                target.merchant_id = value ? parseInt(value) : null;
+                target.merchant_name = null;
+            }
+        },
+
         canCreate() {
             const t = this.newTxn;
-            return t.transaction_date && t.merchant_id && t.category_id
-                && t.payment_method_id && t.amount !== null && t.amount !== '';
+            const pm = this.paymentMethods.find(x => x.id === t.payment_method_id);
+            const hasMerchant = !!t.merchant_id || !!(t.merchant_name && t.merchant_name.trim());
+            return t.transaction_date && hasMerchant && t.category_id
+                && t.payment_method_id && t.amount !== null && t.amount !== ''
+                && !pm?.provider;
         },
 
         newTxnCurrency() {
@@ -558,6 +621,7 @@ function phoneTransactions() {
                 id: t.id,
                 transaction_date: t.transaction_date,
                 merchant_id: t.merchant_id,
+                merchant_name: null,
                 category_id: t.category_id,
                 payment_method_id: t.payment_method_id,
                 amount: parseFloat(t.amount),
@@ -566,6 +630,7 @@ function phoneTransactions() {
                 installment_total: t.installment_total,
                 recurrence_kind: t.recurrence_kind || '',
                 contract_end_date: t.contract_end_date || '',
+                provider: t.provider || null,
             };
             this.expanded = null;
         },
@@ -580,16 +645,22 @@ function phoneTransactions() {
             this.errorMessage = '';
             try {
                 const patch = {
-                    transaction_date: this.editing.transaction_date,
                     merchant_id: this.editing.merchant_id,
+                    merchant_name: this.editing.merchant_name || null,
                     category_id: this.editing.category_id,
-                    payment_method_id: this.editing.payment_method_id,
-                    amount: this.editing.amount,
                     description: this.editing.description,
                     installment_current: this.editing.installment_current,
                     installment_total: this.editing.installment_total,
                     recurrence_kind: this.editing.recurrence_kind || null,
                 };
+                // One writer per fact: on a provider-ingested row these three
+                // are the provider's, and the API refuses a change to any of
+                // them. Leaving them out is what keeps the rest editable.
+                if (!this.editing.provider) {
+                    patch.transaction_date = this.editing.transaction_date;
+                    patch.payment_method_id = this.editing.payment_method_id;
+                    patch.amount = this.editing.amount;
+                }
                 if (this.editing.recurrence_kind === 'CONTRACT' && this.editing.contract_end_date) {
                     patch.contract_end_date = this.editing.contract_end_date;
                 } else {

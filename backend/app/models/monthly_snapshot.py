@@ -10,6 +10,19 @@ from app.models.exchange_rate import ExchangeRate
 
 
 class MonthlySnapshot(Base, TimestampMixin):
+    """Frozen v1-import fossil, not a live table.
+
+    Only 4 rows exist (Jan-Apr 2026, frozen 2026-05-02/05) and there is no
+    write path in v2.5 code that inserts or updates this table anymore
+    (`/reports/monthly` recomputes everything live from `transactions` +
+    `exchange_rates` + `savings_snapshots` + `credit_card_balances`, and only
+    labels these 4 pre-existing rows "Snapshot" in the UI). The rows stay
+    because the migrated v1 data for that period is unstable and this is the
+    only record of it; do not add a new writer, and do not drop the table or
+    its data as part of unrelated cleanup. See CLAUDE.md's Architectural
+    Decisions section for the full rationale.
+    """
+
     __tablename__ = "monthly_snapshots"
     __table_args__ = (UniqueConstraint("year", "month", name="uq_snapshot_period"),)
 

@@ -33,7 +33,14 @@
             </div>
         </div>
         <div class="pcard" style="background: rgba(244, 63, 94, 0.08);">
-            <div class="text-xs uppercase font-medium text-rose-700">Spending YTD</div>
+            <div class="text-xs uppercase font-medium text-rose-700">
+                Spending YTD
+                <!-- Twin of the desktop marker: some month priced a
+                     transaction with a fallback rate. -->
+                <span x-show="report?.spending_rate_approximate"
+                      class="text-[10px] normal-case text-amber-700"
+                      title="Estimated: some month has a transaction with no exchange rate on or before its date, so the earliest rate on file was used.">approx</span>
+            </div>
             <div class="text-lg font-semibold text-rose-900" x-text="formatUsd(report?.total_spending_usd)"></div>
             <div class="text-[10px] text-rose-600 font-mono" x-text="formatBrl(report?.total_spending_usd)"></div>
             <div class="text-xs text-rose-700 mt-0.5">

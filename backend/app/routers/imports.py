@@ -35,6 +35,7 @@ from app.services.parsers.cc_paste import parse_cc_paste
 from app.services.parsers.detect import detect, detect_checking
 from app.services.match_rules import load_match_rules
 from app.services.parsers.checking_paste import parse_paste
+from app.services.provider_guard import provider_for_payment_method
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
 
@@ -43,13 +44,15 @@ def _block_if_plaid(db: Session, payment_method_id: int) -> None:
     """Hard guard: a payment method fed by a provider auto-pull (Plaid or
     Pluggy) must not also be imported manually (would risk duplicates on
     posted-vs-authorized date drift). The provider is the single source for
-    those accounts."""
+    those accounts.
+
+    The oldest of the one-writer-per-fact guards; `services/provider_guard`
+    now states the rule for the other manual paths and owns the predicate.
+    The wording here stays as it was: /guide quotes it."""
     pm = db.get(PaymentMethod, payment_method_id)
     if pm is None:
         return
-    provider = (
-        "Plaid" if pm.plaid_account_id else "Pluggy" if pm.pluggy_account_id else None
-    )
+    provider = provider_for_payment_method(pm)
     if provider:
         raise HTTPException(
             status_code=409,

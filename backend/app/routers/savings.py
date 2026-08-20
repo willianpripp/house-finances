@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Currency
+from app.models import Currency, SavingsSnapshot
+from app.services.provider_guard import guard_savings_snapshot_write
 from app.services.savings import (
     SavingsCreate,
     SavingsPatch,
@@ -108,6 +109,7 @@ def accounts_endpoint(db: Session = Depends(get_db)) -> list[str]:
 def create_endpoint(payload: SavingsIn, db: Session = Depends(get_db)) -> SavingsOut:
     if not payload.account_name.strip():
         raise HTTPException(status_code=400, detail="account_name is required")
+    guard_savings_snapshot_write(db, payload.account_name)
     row = create_snapshot(
         db,
         SavingsCreate(
@@ -126,6 +128,17 @@ def patch_endpoint(
     patch: SavingsPatchIn,
     db: Session = Depends(get_db),
 ) -> SavingsOut:
+    snap = db.get(SavingsSnapshot, snapshot_id)
+    if snap is None:
+        raise HTTPException(
+            status_code=404, detail=f"Savings snapshot {snapshot_id} not found"
+        )
+    # Both ends of the edit: the account this row already belongs to, and the
+    # account a rename would move it into. Either being provider-fed makes this
+    # a second writer on that account's balance.
+    guard_savings_snapshot_write(db, snap.account_name)
+    if patch.account_name is not None:
+        guard_savings_snapshot_write(db, patch.account_name)
     try:
         row = update_snapshot(
             db, snapshot_id, SavingsPatch(**patch.model_dump(exclude_unset=True))

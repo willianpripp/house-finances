@@ -13,13 +13,21 @@ reconciliation) and applies side effects on commit:
 | SPENDING          | insert Transaction (categorizer-driven merchant/category)     |
 | TAX_PAYMENT       | insert Transaction in `Taxes` category                         |
 | CC_PAYMENT        | append CreditCardBalance for the matched card (dedup ±4 days) |
-| SALARY            | adjust same-month withholding FIXED rows proportionally       |
+| SALARY            | income receipt for month+1 + adjust withholding FIXED rows     |
+| RENT_DEPOSIT      | income receipt for month+1 (RENTS_BRAZIL)                      |
+| EXTRA_INCOME      | income receipt for the arrival month (EXTRA_USD / EXTRA_BRL)   |
 | INTEREST          | skip — folded into period-end snapshot                         |
 | INTERNAL_TRANSFER | skip                                                            |
 | (always)          | append SavingsSnapshot for period_end + ImportLog audit       |
 
 Default for every classification is to ACT. The import_log notes lists each
 adjustment so the user can audit instead of typing.
+
+The three income classes write `income_receipts` rows and then re-derive that
+month's `income_entries` total from them (`services/income.py`). They never
+write a total directly: that is what lets a re-pulled provider window be
+idempotent per deposit instead of freezing the month, and what lets a
+late-posting deposit land without a manual correction.
 """
 from __future__ import annotations
 
@@ -48,7 +56,7 @@ from app.models import (
     User,
 )
 from app.models.enums import ImportSource, RecurrenceKind
-from app.services import household
+from app.services import household, income as income_service
 from app.services.categorizer import Categorizer
 from app.services.match_rules import load_match_rules
 from app.services.parsers import (
@@ -924,7 +932,7 @@ def commit_checking_import(
             if member is not None and member.has_withholdings:
                 # Fixed gross → auto-create the income_entries row when the
                 # month hasn't been seeded yet, then reconcile withholdings.
-                notes.append(_ensure_partner_salary(session, a, member))
+                notes.append(_ensure_partner_salary(session, a, member, pm))
             recon = _build_salary_reconciliation(session, a)
             if recon and recon.proposed_adjustments and not recon.requires_review:
                 count = _apply_withholding_adjustments(session, recon)
@@ -1342,112 +1350,197 @@ def _apply_withholding_adjustments(session: Session, recon: SalaryReconciliation
     return count
 
 
+# ---------- income receipts ----------
+#
+# Every income side effect writes an `income_receipts` row and then re-derives
+# that month's `income_entries` total from the receipts (see
+# `services/income.py`). Nothing here writes a total directly any more, which
+# is what removed the extra-income freeze: a deposit posting after a month's
+# first provider sync is just one more receipt, and the recompute picks it up
+# without erasing what another account contributed to the same month.
+
+_MONTH_ABBR = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+
+
+def _funded_period(activity_date: date_type) -> tuple[int, int]:
+    """The month a deposit FUNDS under the lag-by-1-month rule (CLAUDE.md):
+    money arriving at the end of month X funds X+1."""
+    if activity_date.month == 12:
+        return activity_date.year + 1, 1
+    return activity_date.year, activity_date.month + 1
+
+
+def _receipt_provenance(a: CheckingActivity) -> str:
+    if a.plaid_transaction_id is not None:
+        return income_service.PROVENANCE_PLAID
+    if a.pluggy_transaction_id is not None:
+        return income_service.PROVENANCE_PLUGGY
+    return income_service.PROVENANCE_STATEMENT
+
+
+def _income_total_note(
+    session: Session, year: int, month: int, source: IncomeSource
+) -> str:
+    """`recompute_month` plus the sentence the audit trail needs.
+
+    A period still held by a pre-ledger lump does NOT sum the receipts observed
+    for it (see `services/income.recompute_month`), and a note saying only
+    "total $X" would look like the recompute had no effect. Say why instead:
+    `import_logs.notes` is where this app explains itself.
+
+    This is also, since the `/income` page was removed (2026-08-20), the ONLY
+    place a struck-through/not-counted receipt is visible to a human short of
+    querying `income_receipts` directly — worth keeping in mind before ever
+    trimming this string.
+    """
+    row = income_service.recompute_month(session, year, month, source)
+    total = Decimal(row.amount) if row else Decimal("0")
+    if income_service.has_backfill_lump(session, year, month, source):
+        return (
+            f"${total} (pre-ledger total held: retire the backfill receipt via "
+            f"DELETE /api/income/receipts/{{id}} once this window is fully re-synced)"
+        )
+    return f"${total}"
+
+
+def _receipt_draft(
+    a: CheckingActivity,
+    *,
+    source: IncomeSource,
+    year: int,
+    month: int,
+    amount: Decimal,
+    currency: Currency,
+    payment_method_id: int | None,
+) -> income_service.ReceiptDraft:
+    return income_service.ReceiptDraft(
+        source=source,
+        year=year,
+        month=month,
+        receipt_date=a.activity_date,
+        amount=amount,
+        currency=currency,
+        provenance=_receipt_provenance(a),
+        payment_method_id=payment_method_id,
+        plaid_transaction_id=a.plaid_transaction_id,
+        pluggy_transaction_id=a.pluggy_transaction_id,
+        description=a.description,
+    )
+
+
 def _record_primary_salary(
     session: Session, a: CheckingActivity, pm: PaymentMethod
 ) -> str:
-    """Auto-create income_entries.PRIMARY_SALARY for month+1 (lag-1 convention).
+    """Record the PRIMARY_SALARY receipt for month+1 (lag-1 convention).
 
-    A gross-deposit member's pay varies month-to-month; they have
-    no US-style withholdings to adjust, so the existing
-    _build_salary_reconciliation flow returns None for him. This helper
-    creates the income row with amount = deposit value when missing.
-    Idempotent: a pre-existing row for the period is left untouched.
+    A gross-deposit member's pay varies month-to-month; they have no US-style
+    withholdings to adjust, so `_build_salary_reconciliation` returns None for
+    them and the amount comes from the deposit itself.
+
+    The receipt is period-scoped (`services/income.PERIOD_SCOPED_SOURCES`), so a
+    second SALARY deposit landing for a month already booked is a no-op — the
+    same behaviour the pre-ledger version had, and what keeps a monthly gross
+    from becoming a sum of deposits.
     """
-    if a.activity_date.month == 12:
-        period_year, period_month = a.activity_date.year + 1, 1
-    else:
-        period_year, period_month = a.activity_date.year, a.activity_date.month + 1
-
-    existing = session.scalar(
-        select(IncomeEntry).filter_by(
-            year=period_year, month=period_month, source=IncomeSource.PRIMARY_SALARY
-        )
-    )
+    period_year, period_month = _funded_period(a.activity_date)
     amount = abs(a.amount)
-    month_name = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[period_month - 1]
-    if existing is not None:
-        return (
-            f"SALARY {a.activity_date} ${amount}: income_entries for "
-            f"{month_name} {period_year} PRIMARY_SALARY already set to "
-            f"${Decimal(existing.amount)} — left as-is"
-        )
+    month_name = _MONTH_ABBR[period_month - 1]
 
-    session.add(
-        IncomeEntry(
+    _, created = income_service.record_receipt(
+        session,
+        _receipt_draft(
+            a,
+            source=IncomeSource.PRIMARY_SALARY,
             year=period_year,
             month=period_month,
-            source=IncomeSource.PRIMARY_SALARY,
             amount=amount,
             currency=pm.currency,
-            exchange_rate_id=None,
+            payment_method_id=pm.id,
+        ),
+    )
+    total = _income_total_note(
+        session, period_year, period_month, IncomeSource.PRIMARY_SALARY
+    )
+    if not created:
+        return (
+            f"SALARY {a.activity_date} ${amount}: {month_name} {period_year} "
+            f"PRIMARY_SALARY already has its receipt — total stays {total}"
         )
-    )
     return (
-        f"SALARY {a.activity_date} ${amount}: created income_entries for "
-        f"{month_name} {period_year} PRIMARY_SALARY"
+        f"SALARY {a.activity_date} ${amount}: recorded PRIMARY_SALARY receipt "
+        f"for {month_name} {period_year} — total {total}"
     )
 
 
-def _ensure_partner_salary(session: Session, a: CheckingActivity, member) -> str:
-    """Auto-create the member's income row for month+1 (lag-1 convention).
+def _ensure_partner_salary(
+    session: Session, a: CheckingActivity, member, pm: PaymentMethod
+) -> str:
+    """Record the member's salary receipt for month+1 (lag-1 convention).
 
     Their gross is fixed per pay level (`salary_levels`) — only the withholdings
     move month to month, so unlike a variable deposit the amount is never taken
-    from the statement. Mirrors _record_primary_salary. Idempotent: a
-    pre-existing row for the period is left untouched.
+    from the statement. Period-scoped for the same reason as
+    `_record_primary_salary`, and here it is load-bearing: summing two deposits
+    into one month would break the "salary gross is invariant per pay level"
+    rule outright.
     """
-    if a.activity_date.month == 12:
-        period_year, period_month = a.activity_date.year + 1, 1
-    else:
-        period_year, period_month = a.activity_date.year, a.activity_date.month + 1
-
+    period_year, period_month = _funded_period(a.activity_date)
     source = member.salary_income_source
-    existing = session.scalar(
-        select(IncomeEntry).filter_by(
-            year=period_year, month=period_month, source=source
-        )
-    )
-    month_name = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[period_month - 1]
-    if existing is not None:
-        return (
-            f"SALARY {a.activity_date}: income_entries for {month_name} "
-            f"{period_year} {source.name} already ${Decimal(existing.amount)} — left as-is"
-        )
+    month_name = _MONTH_ABBR[period_month - 1]
 
     gross = household.gross_for_month(member, period_year, period_month)
     if gross is None:
+        # Loud on purpose, and loud even when the month already has a receipt: a
+        # missing or stale salary level is exactly the misconfiguration that made
+        # the importer read a raise as a tax cut in production (STATUS.md,
+        # 2026-08).
         return (
             f"SALARY {a.activity_date}: no salary level configured for "
-            f"{member.display_name} in {month_name} {period_year} — income row not created"
+            f"{member.display_name} in {month_name} {period_year} — no receipt recorded"
         )
-    session.add(
-        IncomeEntry(
+
+    _, created = income_service.record_receipt(
+        session,
+        _receipt_draft(
+            a,
+            source=source,
             year=period_year,
             month=period_month,
-            source=source,
             amount=gross,
             currency=Currency.USD,
-            exchange_rate_id=None,
-        )
+            payment_method_id=pm.id,
+        ),
     )
+    total = _income_total_note(session, period_year, period_month, source)
+    if not created:
+        return (
+            f"SALARY {a.activity_date}: {month_name} {period_year} {source.name} "
+            f"already has its receipt — total stays {total}"
+        )
     return (
-        f"SALARY {a.activity_date}: created income_entries for {month_name} "
-        f"{period_year} {source.name} ${gross}"
+        f"SALARY {a.activity_date}: recorded {source.name} receipt ${gross} for "
+        f"{month_name} {period_year} — total {total}"
     )
 
 
 def _record_extra_income(
     session: Session, a: CheckingActivity, pm: PaymentMethod
 ) -> str:
-    """Auto-create / accumulate `income_entries.EXTRA_USD` or `EXTRA_BRL`
-    for the deposit month.
+    """Record one EXTRA_USD / EXTRA_BRL receipt and re-derive the month.
 
-    Unlike SALARY / RENT_DEPOSIT (lag-1), ad-hoc Pix/refunds are booked
-    against the calendar month they arrived. UNIQUE(year, month, source)
-    no longer collides across currencies — USD and BRL extras live in
-    separate buckets. Within the same currency we ACCUMULATE: if a row
-    already exists, we add the new amount to it (multiple Pix in the same
-    month sum up). User feedback in 2026-05-22 session."""
+    Unlike SALARY / RENT_DEPOSIT (lag-1), ad-hoc Pix and refunds are booked
+    against the calendar month they arrived in.
+
+    This is the case the ledger was built for. The pre-ledger version had to
+    choose between accumulating (which inflated the month every time Plaid or
+    Pluggy re-pulled its window from the clean-start anchor) and freezing the
+    total once set (which is what shipped, and which meant a deposit posting
+    after the month's first sync had to be typed in by hand). With one row per
+    deposit, neither compromise is needed: a re-pull matches the receipt's
+    provider id and changes nothing, a genuinely new deposit adds a row, and
+    the total is the sum. Two accounts feeding EXTRA_BRL keep their own rows,
+    so recomputing from one account's window cannot erase the other's.
+    """
     if a.amount <= 0:
         return (
             f"EXTRA_INCOME {a.activity_date} ${a.amount}: skipped — debit "
@@ -1457,101 +1550,78 @@ def _record_extra_income(
     source = (
         IncomeSource.EXTRA_USD if pm.currency == Currency.USD else IncomeSource.EXTRA_BRL
     )
-    # Session has autoflush=False; flush so a row created by a previous
-    # activity in the same paste is visible (otherwise two same-month BRL
-    # Pix in one import would each insert -> UNIQUE violation).
-    session.flush()
-    existing = session.scalar(
-        select(IncomeEntry).filter_by(year=year, month=month, source=source)
-    )
     amount = abs(a.amount)
-    month_name = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[month - 1]
-    if existing is not None:
-        # Plaid AND Pluggy re-pull the full window since the clean-start anchor
-        # on every commit, so accumulating would inflate on re-sync: the same
-        # deposit is presented again every time and lands on top of a total
-        # that already contains it. Hit in production on both providers. For
-        # any provider-sourced row, leave the existing total untouched
-        # (idempotent). Manual paste keeps accumulating (multiple Pix sum up).
-        provider = (
-            "Plaid" if a.plaid_transaction_id is not None
-            else "Pluggy" if a.pluggy_transaction_id is not None
-            else None
-        )
-        if provider is not None:
-            return (
-                f"EXTRA_INCOME {a.activity_date} ${amount} {pm.currency.value}: "
-                f"{month_name} {year} {source.value} already set to "
-                f"${Decimal(existing.amount)} — left as-is ({provider}, idempotent)"
-            )
-        prev = Decimal(existing.amount)
-        existing.amount = prev + amount
-        return (
-            f"EXTRA_INCOME {a.activity_date} +${amount} {pm.currency.value}: "
-            f"accumulated into {month_name} {year} {source.value} "
-            f"(${prev} -> ${prev + amount})"
-        )
-    session.add(
-        IncomeEntry(
+    month_name = _MONTH_ABBR[month - 1]
+
+    _, created = income_service.record_receipt(
+        session,
+        _receipt_draft(
+            a,
+            source=source,
             year=year,
             month=month,
-            source=source,
             amount=amount,
             currency=pm.currency,
-            exchange_rate_id=None,
-        )
+            payment_method_id=pm.id,
+        ),
     )
+    total = _income_total_note(session, year, month, source)
+    if not created:
+        return (
+            f"EXTRA_INCOME {a.activity_date} ${amount} {pm.currency.value}: "
+            f"receipt already recorded — {month_name} {year} {source.value} "
+            f"stays {total}"
+        )
     return (
-        f"EXTRA_INCOME {a.activity_date} ${amount} {pm.currency.value}: "
-        f"created income_entries for {month_name} {year} {source.value}"
+        f"EXTRA_INCOME {a.activity_date} +${amount} {pm.currency.value}: "
+        f"receipt recorded on {pm.name} — {month_name} {year} {source.value} "
+        f"recomputed to {total}"
     )
 
 
 def _record_rent_deposit(
     session: Session, a: CheckingActivity, pm: PaymentMethod
 ) -> str:
-    """Auto-create income_entries.RENTS_BRAZIL for month+1 (lag-1 convention).
+    """Record one RENTS_BRAZIL receipt for month+1 (lag-1 convention).
 
-    Idempotent: if a row already exists for the target (year, month, RENTS_BRAZIL)
-    we leave it alone — the user owns that value once it's set.
+    Per-deposit, not per-month: the pre-ledger version kept whatever total the
+    month already had, so a second rent deposit in the same month was silently
+    dropped. Rents are per-transaction income like the extras are, so each
+    deposit is its own receipt and they sum. Idempotent on the provider id (or
+    the statement signature), so a re-pulled window changes nothing.
     """
     if a.amount <= 0:
         return (
             f"RENT_DEPOSIT {a.activity_date} ${a.amount}: skipped — debit "
             f"(payer's name on an outbound transfer, not an incoming deposit)"
         )
-    if a.activity_date.month == 12:
-        period_year, period_month = a.activity_date.year + 1, 1
-    else:
-        period_year, period_month = a.activity_date.year, a.activity_date.month + 1
-
-    existing = session.scalar(
-        select(IncomeEntry).filter_by(
-            year=period_year, month=period_month, source=IncomeSource.RENTS_BRAZIL
-        )
-    )
+    period_year, period_month = _funded_period(a.activity_date)
     amount = abs(a.amount)
-    month_name = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")[period_month - 1]
-    if existing is not None:
-        return (
-            f"RENT_DEPOSIT {a.activity_date} ${amount}: income_entries for "
-            f"{month_name} {period_year} RENTS_BRAZIL already set to "
-            f"${Decimal(existing.amount)} — left as-is"
-        )
+    month_name = _MONTH_ABBR[period_month - 1]
 
-    session.add(
-        IncomeEntry(
+    _, created = income_service.record_receipt(
+        session,
+        _receipt_draft(
+            a,
+            source=IncomeSource.RENTS_BRAZIL,
             year=period_year,
             month=period_month,
-            source=IncomeSource.RENTS_BRAZIL,
             amount=amount,
             currency=pm.currency,
-            exchange_rate_id=None,
-        )
+            payment_method_id=pm.id,
+        ),
     )
+    total = _income_total_note(
+        session, period_year, period_month, IncomeSource.RENTS_BRAZIL
+    )
+    if not created:
+        return (
+            f"RENT_DEPOSIT {a.activity_date} ${amount}: receipt already "
+            f"recorded — {month_name} {period_year} RENTS_BRAZIL stays {total}"
+        )
     return (
-        f"RENT_DEPOSIT {a.activity_date} ${amount}: created income_entries for "
-        f"{month_name} {period_year} RENTS_BRAZIL"
+        f"RENT_DEPOSIT {a.activity_date} +${amount}: receipt recorded on "
+        f"{pm.name} — {month_name} {period_year} RENTS_BRAZIL recomputed to {total}"
     )
 
 

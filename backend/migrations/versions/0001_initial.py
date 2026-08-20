@@ -102,6 +102,7 @@ def upgrade() -> None:
         sa.Column("effective", sa.Numeric(precision=8, scale=4), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("source", sa.String(length=16), server_default="manual", nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("rate_date"),
     )
@@ -296,6 +297,24 @@ def upgrade() -> None:
     op.create_index(op.f("ix_transfer_rules_payment_method_id"), "transfer_rules", ["payment_method_id"], unique=False)
 
     op.create_table(
+        "spend_goals",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("payment_method_id", sa.Integer(), nullable=False),
+        sa.Column("target_amount", sa.Numeric(precision=12, scale=2), nullable=False),
+        sa.Column("currency", sa.Enum("USD", "BRL", name="currency"), nullable=False),
+        sa.Column("start_date", sa.Date(), nullable=False),
+        sa.Column("deadline", sa.Date(), nullable=False),
+        sa.Column("reward_note", sa.Text(), nullable=False),
+        sa.Column("active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.ForeignKeyConstraint(["payment_method_id"], ["payment_methods.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("payment_method_id", "start_date", name="uq_spend_goals_pm_start"),
+    )
+    op.create_index(op.f("ix_spend_goals_payment_method_id"), "spend_goals", ["payment_method_id"], unique=False)
+
+    op.create_table(
         "categorization_rules",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("keyword", sa.String(length=100), nullable=False),
@@ -373,6 +392,57 @@ def upgrade() -> None:
     op.create_index(op.f("ix_income_entries_year"), "income_entries", ["year"], unique=False)
 
     op.create_table(
+        "income_receipts",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column(
+            "source",
+            sa.Enum(
+                "PRIMARY_SALARY", "PARTNER_SALARY", "RENTS_BRAZIL", "EXTRA_USD", "EXTRA_BRL", name="income_source"
+            ),
+            nullable=False,
+        ),
+        sa.Column("year", sa.Integer(), nullable=False),
+        sa.Column("month", sa.Integer(), nullable=False),
+        sa.Column("receipt_date", sa.Date(), nullable=False),
+        sa.Column("amount", sa.Numeric(precision=12, scale=2), nullable=False),
+        sa.Column("currency", sa.Enum("USD", "BRL", name="currency"), nullable=False),
+        sa.Column("payment_method_id", sa.Integer(), nullable=True),
+        sa.Column("plaid_transaction_id", sa.String(length=100), nullable=True),
+        sa.Column("pluggy_transaction_id", sa.String(length=64), nullable=True),
+        sa.Column("provenance", sa.String(length=20), nullable=False),
+        sa.Column("description", sa.String(length=500), server_default="", nullable=False),
+        sa.Column("signature", sa.String(length=200), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.ForeignKeyConstraint(["payment_method_id"], ["payment_methods.id"], ondelete="SET NULL"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("signature", name="uq_income_receipts_signature"),
+    )
+    op.create_index(
+        "ix_income_receipts_period_source", "income_receipts", ["year", "month", "source"], unique=False
+    )
+    op.create_index(
+        op.f("ix_income_receipts_receipt_date"), "income_receipts", ["receipt_date"], unique=False
+    )
+    op.create_index(
+        op.f("ix_income_receipts_payment_method_id"), "income_receipts", ["payment_method_id"], unique=False
+    )
+    op.create_index(
+        "uq_income_receipts_plaid_tx",
+        "income_receipts",
+        ["plaid_transaction_id"],
+        unique=True,
+        postgresql_where=sa.text("plaid_transaction_id IS NOT NULL"),
+    )
+    op.create_index(
+        "uq_income_receipts_pluggy_tx",
+        "income_receipts",
+        ["pluggy_transaction_id"],
+        unique=True,
+        postgresql_where=sa.text("pluggy_transaction_id IS NOT NULL"),
+    )
+
+    op.create_table(
         "monthly_snapshots",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("year", sa.Integer(), nullable=False),
@@ -419,6 +489,13 @@ def upgrade() -> None:
             "direction",
             sa.Enum("OWED_TO_ME", "I_OWE", name="receivable_direction"),
             server_default="OWED_TO_ME",
+            nullable=False,
+        ),
+        sa.Column("settled_transaction_id", sa.Integer(), nullable=True),
+        sa.Column(
+            "settled_transaction_autocreated",
+            sa.Boolean(),
+            server_default=sa.text("false"),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(["payment_method_id"], ["payment_methods.id"], ondelete="SET NULL"),
@@ -489,6 +566,25 @@ def upgrade() -> None:
         ["pluggy_transaction_id"],
         unique=True,
         postgresql_where=sa.text("pluggy_transaction_id IS NOT NULL"),
+    )
+
+    # Deferred: receivables is created before transactions, so its link to the
+    # ledger entry that settled it cannot be declared inline. Private chain:
+    # 2026_08_19_1000-receivables_settled_transaction.py.
+    op.create_foreign_key(
+        "fk_receivables_settled_transaction_id",
+        "receivables",
+        "transactions",
+        ["settled_transaction_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.create_index(
+        "uq_receivables_settled_transaction_id",
+        "receivables",
+        ["settled_transaction_id"],
+        unique=True,
+        postgresql_where=sa.text("settled_transaction_id IS NOT NULL"),
     )
 
     op.create_table(
@@ -582,6 +678,9 @@ def downgrade() -> None:
     op.drop_table("savings_snapshots")
     op.drop_table("pluggy_seen_transactions")
     op.drop_table("plaid_seen_transactions")
+    # Before transactions can go, the deferred receivables link to it must.
+    op.drop_index("uq_receivables_settled_transaction_id", table_name="receivables")
+    op.drop_constraint("fk_receivables_settled_transaction_id", "receivables", type_="foreignkey")
     op.drop_index("uq_transactions_pluggy_transaction_id", table_name="transactions")
     op.drop_index("uq_transactions_plaid_transaction_id", table_name="transactions")
     op.drop_index("uq_transaction_signature_manual", table_name="transactions")
@@ -593,6 +692,12 @@ def downgrade() -> None:
     op.drop_table("receivables")
     op.drop_index(op.f("ix_monthly_snapshots_year"), table_name="monthly_snapshots")
     op.drop_table("monthly_snapshots")
+    op.drop_index("uq_income_receipts_pluggy_tx", table_name="income_receipts")
+    op.drop_index("uq_income_receipts_plaid_tx", table_name="income_receipts")
+    op.drop_index(op.f("ix_income_receipts_payment_method_id"), table_name="income_receipts")
+    op.drop_index(op.f("ix_income_receipts_receipt_date"), table_name="income_receipts")
+    op.drop_index("ix_income_receipts_period_source", table_name="income_receipts")
+    op.drop_table("income_receipts")
     op.drop_index(op.f("ix_income_entries_year"), table_name="income_entries")
     op.drop_table("income_entries")
     op.drop_index(op.f("ix_import_logs_payment_method_id"), table_name="import_logs")
@@ -600,6 +705,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_credit_card_balances_payment_method_id"), table_name="credit_card_balances")
     op.drop_table("credit_card_balances")
     op.drop_table("categorization_rules")
+    op.drop_index(op.f("ix_spend_goals_payment_method_id"), table_name="spend_goals")
+    op.drop_table("spend_goals")
     op.drop_index(op.f("ix_transfer_rules_payment_method_id"), table_name="transfer_rules")
     op.drop_table("transfer_rules")
     op.drop_index(op.f("ix_withholding_merchants_member_id"), table_name="withholding_merchants")

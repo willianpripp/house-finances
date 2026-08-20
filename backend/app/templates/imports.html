@@ -661,11 +661,12 @@ function importsPage() {
             // no file parser yet).
             if (this.inputMode !== 'paste') return this.paymentMethods;
             // Paste mode: only PMs whose parser accepts a paste, and never a
-            // Plaid-fed one: the manual-import endpoint hard-blocks (409) any
-            // PM with a plaid_account_id (its activity comes from
-            // Connections then Review).
+            // provider-fed one: the manual-import endpoint hard-blocks (409)
+            // any PM with a provider (its activity comes from Connections then
+            // Review). `provider` covers Pluggy too, which the old
+            // plaid_account_id check missed and which 409d on submit.
             return this.paymentMethods.filter(pm =>
-                !pm.plaid_account_id && this.hints[pm.id]?.paste_capable
+                !pm.provider && this.hints[pm.id]?.paste_capable
             );
         },
 

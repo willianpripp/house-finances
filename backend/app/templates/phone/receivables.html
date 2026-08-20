@@ -47,6 +47,12 @@
         </label>
     </div>
 
+    <!-- What settling just did to the ledger. -->
+    <div x-show="settleNote" x-cloak
+         class="text-xs rounded border px-3 py-2"
+         :class="settleOk ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'"
+         x-text="settleNote"></div>
+
     <!-- CHARGES: tap a row to open actions -->
     <div class="pcard">
         <template x-for="r in rows" :key="r.id">
@@ -57,6 +63,8 @@
                         <span class="text-sm font-medium text-slate-800" x-text="r.person_name"></span>
                         <span class="block text-xs text-slate-500"
                               x-text="r.description + (r.store ? ' · ' + r.store : '') + ' · ' + r.charge_date"></span>
+                        <span x-show="r.settled_transaction_id" class="block text-xs text-slate-400"
+                              x-text="r.settled_transaction_autocreated ? '⇄ posted to the ledger' : '⇄ linked to an imported transaction'"></span>
                     </span>
                     <span class="text-sm font-semibold whitespace-nowrap"
                           :class="r.direction === 'I_OWE' ? 'text-rose-700' : 'text-slate-800'"
@@ -175,6 +183,7 @@ function phoneReceivables() {
         sel: {}, parts: {},
         newPerson: { name: '' },
         error: '',
+        settleNote: '', settleOk: false,
         expanded: null,
         sheetOpen: false,
         form: { description: '', store: '', payment_method_id: null, charge_date: '', total: null, includeMe: true, direction: 'OWED_TO_ME', currency: 'USD' },
@@ -253,10 +262,32 @@ function phoneReceivables() {
             this.sheetOpen = false;
             await Promise.all([this.loadRows(), this.loadSummary()]);
         },
+        // Settling moves the ledger; say exactly how, so nobody has to open
+        // /transactions to find out whether a row was written or reused.
+        ledgerNote(l) {
+            if (!l) return '';
+            const money = l.amount !== null && l.amount !== undefined
+                ? this.formatAmount(l.amount, l.currency || 'USD') : '';
+            const where = l.account_name ? ` on ${l.account_name}` : '';
+            const cat = l.category_name ? ` · ${l.category_name}` : '';
+            if (l.action === 'created') return `Posted ${money}${where}${cat} on ${l.transaction_date}.`;
+            if (l.action === 'linked') return `Linked to the transaction already in the ledger: ${money}${where} on ${l.transaction_date}. Nothing new was written.`;
+            if (l.action === 'deleted') return `Removed the ledger entry this settle had created (${money}${where}).`;
+            if (l.action === 'unlinked') return 'Unlinked from the imported transaction, which was kept in the ledger.';
+            return l.reason || 'Nothing was written to the ledger.';
+        },
         async settle(id, settled) {
-            await fetch(`/api/receivables/${id}/settle`, {
+            const res = await fetch(`/api/receivables/${id}/settle`, {
                 method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settled }),
             });
+            if (!res.ok) {
+                this.settleOk = false;
+                this.settleNote = `Failed to update (${res.status})`;
+            } else {
+                const body = await res.json();
+                this.settleOk = ['created', 'linked'].includes(body.ledger.action);
+                this.settleNote = this.ledgerNote(body.ledger);
+            }
             this.expanded = null;
             await Promise.all([this.loadRows(), this.loadSummary()]);
         },

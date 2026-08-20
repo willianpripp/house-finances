@@ -16,7 +16,32 @@ from sqlalchemy.orm import Session
 
 from app.models import CarLoanPayment, Category, Merchant, PaymentMethod, Transaction
 from app.models.enums import RecurrenceKind
+from app.services.categorizer import MAX_MERCHANT_NAME_LEN, get_or_create_merchant
+from app.services.provider_guard import provider_for_transaction
 from app.services.rollover import _next_month, _shift_day
+
+
+def _resolve_merchant_id(
+    session: Session,
+    merchant_id: int | None,
+    merchant_name: str | None,
+    default_category_id: int,
+) -> int:
+    """merchant_name is an alternative to merchant_id on manual create/edit:
+    the "New merchant..." option in both UIs, for a merchant that doesn't
+    exist yet (e.g. a one-off Facebook Marketplace seller). merchant_id wins
+    when both are sent. Get-or-create is case-insensitive (same helper the
+    importers use), so retyping an existing name in a different case reuses
+    the row instead of creating a near-duplicate merchant.
+    """
+    if merchant_id is not None:
+        if session.get(Merchant, merchant_id) is None:
+            raise ValueError(f"Merchant {merchant_id} not found")
+        return merchant_id
+    name = (merchant_name or "").strip()[:MAX_MERCHANT_NAME_LEN]
+    if not name:
+        raise ValueError("merchant_id or merchant_name is required")
+    return get_or_create_merchant(session, name, default_category_id).id
 
 
 @dataclass(frozen=True)
@@ -52,6 +77,10 @@ class TransactionRow:
     payment_method_name: str
     recurrence_kind: str | None = None
     contract_end_date: date_type | None = None
+    # "Plaid" / "Pluggy" when a provider auto-pull ingested this row, else
+    # None. Both UIs read it to lock the fields the provider owns instead of
+    # posting an edit that can only 409.
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +156,7 @@ def list_transactions(session: Session, filters: TransactionFilters) -> Transact
 class TransactionPatch:
     transaction_date: date_type | None = None
     merchant_id: int | None = None
+    merchant_name: str | None = None  # alternative to merchant_id: create-or-get by name
     category_id: int | None = None
     payment_method_id: int | None = None
     amount: Decimal | None = None
@@ -152,14 +182,17 @@ def update_transaction(session: Session, transaction_id: int, patch: Transaction
     old_amount = txn.amount
     old_owner = txn.created_by_user_id
 
-    if patch.merchant_id is not None:
-        if session.get(Merchant, patch.merchant_id) is None:
-            raise ValueError(f"Merchant {patch.merchant_id} not found")
-        txn.merchant_id = patch.merchant_id
+    # Category first: a brand-new merchant (merchant_name) is stamped with the
+    # transaction's (possibly just-updated) category as its default, so this
+    # must land before the merchant resolution below.
     if patch.category_id is not None:
         if session.get(Category, patch.category_id) is None:
             raise ValueError(f"Category {patch.category_id} not found")
         txn.category_id = patch.category_id
+    if patch.merchant_id is not None or patch.merchant_name:
+        txn.merchant_id = _resolve_merchant_id(
+            session, patch.merchant_id, patch.merchant_name, txn.category_id
+        )
     if patch.payment_method_id is not None:
         pm = session.get(PaymentMethod, patch.payment_method_id)
         if pm is None:
@@ -228,10 +261,11 @@ def update_transaction(session: Session, transaction_id: int, patch: Transaction
 @dataclass
 class TransactionCreate:
     transaction_date: date_type
-    merchant_id: int
     category_id: int
     payment_method_id: int
     amount: Decimal
+    merchant_id: int | None = None
+    merchant_name: str | None = None  # alternative to merchant_id: create-or-get by name
     description: str | None = None
     owner_user_id: int | None = None
     installment_current: int = 1
@@ -245,10 +279,13 @@ def create_transaction(session: Session, payload: TransactionCreate) -> Transact
     pm = session.get(PaymentMethod, payload.payment_method_id)
     if pm is None:
         raise ValueError(f"Payment method {payload.payment_method_id} not found")
-    if session.get(Merchant, payload.merchant_id) is None:
-        raise ValueError(f"Merchant {payload.merchant_id} not found")
     if session.get(Category, payload.category_id) is None:
         raise ValueError(f"Category {payload.category_id} not found")
+    # Category validated above so a brand-new merchant (merchant_name) has a
+    # real default_category_id to be created with.
+    merchant_id = _resolve_merchant_id(
+        session, payload.merchant_id, payload.merchant_name, payload.category_id
+    )
 
     # When the user enters a brand-new installment series (current=1, total>1)
     # treat `amount` as the TOTAL purchase, divide it across the N installments,
@@ -267,7 +304,7 @@ def create_transaction(session: Session, payload: TransactionCreate) -> Transact
         last_share = payload.amount - per_share * (n - 1)
         first = Transaction(
             transaction_date=payload.transaction_date,
-            merchant_id=payload.merchant_id,
+            merchant_id=merchant_id,
             category_id=payload.category_id,
             payment_method_id=payload.payment_method_id,
             amount=per_share,
@@ -288,7 +325,7 @@ def create_transaction(session: Session, payload: TransactionCreate) -> Transact
             share = last_share if i == n else per_share
             session.add(Transaction(
                 transaction_date=target_date,
-                merchant_id=payload.merchant_id,
+                merchant_id=merchant_id,
                 category_id=payload.category_id,
                 payment_method_id=payload.payment_method_id,
                 amount=share,
@@ -307,7 +344,7 @@ def create_transaction(session: Session, payload: TransactionCreate) -> Transact
 
     txn = Transaction(
         transaction_date=payload.transaction_date,
-        merchant_id=payload.merchant_id,
+        merchant_id=merchant_id,
         category_id=payload.category_id,
         payment_method_id=payload.payment_method_id,
         amount=payload.amount,
@@ -407,6 +444,7 @@ def _row_from_txn(txn: Transaction) -> TransactionRow:
         payment_method_name=txn.payment_method.name,
         recurrence_kind=txn.recurrence_kind.value if txn.recurrence_kind is not None else None,
         contract_end_date=txn.contract_end_date,
+        provider=provider_for_transaction(txn),
     )
 
 

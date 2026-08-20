@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import PaymentMethod, PaymentMethodType
+from app.services.provider_guard import provider_for_payment_method
 
 router = APIRouter(prefix="/api/payment-methods", tags=["payment_methods"])
 
@@ -25,6 +26,11 @@ class PaymentMethodOut(BaseModel):
     due_day: int | None = None
     plaid_item_id: int | None = None
     plaid_account_id: str | None = None
+    pluggy_account_id: str | None = None
+    # "Plaid" / "Pluggy" / None. The one-writer-per-fact rule in a single
+    # field, so a template can hide a form that would only ever 409 instead of
+    # re-deriving linkage from the two provider id columns.
+    provider: str | None = None
 
 
 class PaymentMethodPatchIn(BaseModel):
@@ -46,6 +52,8 @@ def _serialize(m: PaymentMethod) -> PaymentMethodOut:
         due_day=m.due_day,
         plaid_item_id=m.plaid_item_id,
         plaid_account_id=m.plaid_account_id,
+        pluggy_account_id=m.pluggy_account_id,
+        provider=provider_for_payment_method(m),
     )
 
 

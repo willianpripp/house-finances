@@ -1,24 +1,46 @@
-"""Income entry endpoints."""
+"""Income endpoints. Down to a single escape hatch.
+
+`income_entries` is derived from `income_receipts` (see
+`app/services/income.py`), and every income source has an automatic writer in
+`services/checking_importer.py`, so there is nothing left for a human to type.
+POST, PATCH and DELETE on a monthly total are therefore GONE, not guarded
+(2026-08-20 — the same call made for exchange rates the same day: automation
+replaces manual entry, it does not sit alongside it, or the derived total stops
+meaning what it says).
+
+The `/income` page (both UIs) was removed the same day it was added
+(2026-08-20, the owner's call): with the total fully derived from receipts,
+a read-only ledger view had nothing left to do that the monthly report
+doesn't already show, and its only other job — surfacing a wrong receipt for
+deletion — is an escape hatch a page is not needed for. `GET /api/income` and
+`GET /api/income/receipts` existed only to feed that page; grepped for other
+consumers (templates, scripts, services, tests) and found none, so they went
+with it.
+
+What remains:
+  DELETE /api/income/receipts/{id}    remove one receipt, re-derive its month
+
+Same kind of escape hatch DELETE on /api/exchange-rates is: not a way to enter
+a number, the way to remove a wrong one. Note that a deleted Plaid or Pluggy
+receipt comes back on the next sync (both re-pull their whole window), so it
+is durable only for `statement` and `backfill` receipts. It has no button in
+either UI; use the API directly (curl, httpie) to invoke it. A struck-through
+receipt's `counts_toward_total=false` flag no longer has a page to render it —
+that state now surfaces only in `income_receipts` itself and in the
+explanatory line `checking_importer._income_total_note` writes to
+`import_logs.notes` for any period still held by a pre-ledger lump.
+"""
 from __future__ import annotations
 
 from datetime import date as date_type
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Currency, IncomeSource
-from app.services.income import (
-    IncomeCreate,
-    IncomePatch,
-    IncomeRow,
-    create_income,
-    delete_income,
-    list_income,
-    update_income,
-)
+from app.services.income import IncomeRow, delete_receipt
 
 router = APIRouter(prefix="/api/income", tags=["income"])
 
@@ -39,85 +61,20 @@ class IncomeOut(BaseModel):
         return cls(**row.__dict__)
 
 
-class IncomeListOut(BaseModel):
-    sum_by_currency: dict[str, Decimal]
-    entries: list[IncomeOut]
+class RecomputedMonthOut(BaseModel):
+    """What the month's total became after a receipt was removed. `entry` is
+    null when that receipt was the month's last one and the derived row went
+    away with it."""
+
+    entry: IncomeOut | None
 
 
-class IncomeIn(BaseModel):
-    year: int = Field(ge=2000, le=2100)
-    month: int = Field(ge=1, le=12)
-    source: IncomeSource
-    amount: Decimal
-    currency: Currency
-    exchange_rate_id: int | None = None
-
-
-class IncomePatchIn(BaseModel):
-    year: int | None = Field(default=None, ge=2000, le=2100)
-    month: int | None = Field(default=None, ge=1, le=12)
-    source: IncomeSource | None = None
-    amount: Decimal | None = None
-    currency: Currency | None = None
-    exchange_rate_id: int | None = None
-
-
-@router.get("", response_model=IncomeListOut)
-def list_endpoint(
-    year: int | None = None,
-    month: int | None = Query(default=None, ge=1, le=12),
-    source: IncomeSource | None = None,
-    db: Session = Depends(get_db),
-) -> IncomeListOut:
-    result = list_income(db, year=year, month=month, source=source)
-    return IncomeListOut(
-        sum_by_currency=result.sum_by_currency,
-        entries=[IncomeOut.from_row(r) for r in result.rows],
-    )
-
-
-@router.post("", response_model=IncomeOut, status_code=status.HTTP_201_CREATED)
-def create_endpoint(payload: IncomeIn, db: Session = Depends(get_db)) -> IncomeOut:
+@router.delete("/receipts/{receipt_id}", response_model=RecomputedMonthOut)
+def delete_receipt_endpoint(
+    receipt_id: int, db: Session = Depends(get_db)
+) -> RecomputedMonthOut:
     try:
-        row = create_income(
-            db,
-            IncomeCreate(
-                year=payload.year,
-                month=payload.month,
-                source=payload.source,
-                amount=payload.amount,
-                currency=payload.currency,
-                exchange_rate_id=payload.exchange_rate_id,
-            ),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return IncomeOut.from_row(row)
-
-
-@router.patch("/{income_id}", response_model=IncomeOut)
-def patch_endpoint(
-    income_id: int,
-    patch: IncomePatchIn,
-    db: Session = Depends(get_db),
-) -> IncomeOut:
-    try:
-        row = update_income(
-            db,
-            income_id,
-            IncomePatch(**patch.model_dump(exclude_unset=True)),
-        )
+        row = delete_receipt(db, receipt_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return IncomeOut.from_row(row)
-
-
-@router.delete("/{income_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-def delete_endpoint(income_id: int, db: Session = Depends(get_db)) -> Response:
-    try:
-        delete_income(db, income_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return RecomputedMonthOut(entry=IncomeOut.from_row(row) if row else None)

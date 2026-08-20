@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models import Transaction
+from app.services.provider_guard import (
+    guard_transaction_create,
+    guard_transaction_patch,
+    guard_transaction_split,
+)
 from app.services.transactions import (
     MAX_INSTALLMENTS,
     TransactionCreate,
@@ -44,6 +50,7 @@ class TransactionOut(BaseModel):
     payment_method_name: str
     recurrence_kind: str | None = None
     contract_end_date: date_type | None = None
+    provider: str | None = None
 
     @classmethod
     def from_row(cls, row: TransactionRow) -> "TransactionOut":
@@ -59,6 +66,7 @@ class TransactionListOut(BaseModel):
 class TransactionPatchIn(BaseModel):
     transaction_date: date_type | None = None
     merchant_id: int | None = None
+    merchant_name: str | None = None  # alternative to merchant_id: create-or-get by name
     category_id: int | None = None
     payment_method_id: int | None = None
     amount: Decimal | None = None
@@ -109,11 +117,18 @@ def patch_endpoint(
     patch: TransactionPatchIn,
     db: Session = Depends(get_db),
 ) -> TransactionOut:
+    txn = db.get(Transaction, transaction_id)
+    if txn is None:
+        raise HTTPException(
+            status_code=404, detail=f"Transaction {transaction_id} not found"
+        )
+    changes = patch.model_dump(exclude_unset=True)
+    guard_transaction_patch(db, txn, changes)
     try:
         row = update_transaction(
             db,
             transaction_id,
-            TransactionPatch(**patch.model_dump(exclude_unset=True)),
+            TransactionPatch(**changes),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -124,7 +139,8 @@ def patch_endpoint(
 
 class TransactionCreateIn(BaseModel):
     transaction_date: date_type
-    merchant_id: int
+    merchant_id: int | None = None
+    merchant_name: str | None = None  # alternative to merchant_id: create-or-get by name
     category_id: int
     payment_method_id: int
     amount: Decimal
@@ -142,6 +158,7 @@ def create_endpoint(
     body: TransactionCreateIn,
     db: Session = Depends(get_db),
 ) -> TransactionOut:
+    guard_transaction_create(db, body.payment_method_id)
     try:
         row = create_transaction(db, TransactionCreate(**body.model_dump()))
     except ValueError as exc:
@@ -163,6 +180,12 @@ def split_endpoint(
     body: SplitIn,
     db: Session = Depends(get_db),
 ) -> SplitOut:
+    txn = db.get(Transaction, transaction_id)
+    if txn is None:
+        raise HTTPException(
+            status_code=404, detail=f"Transaction {transaction_id} not found"
+        )
+    guard_transaction_split(txn)
     try:
         rows = split_transaction(db, transaction_id, body.installments)
     except LookupError as exc:

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models import CreditCardBalance
+from app.services.provider_guard import guard_card_balance_write
 from app.services.debts import (
     CarPaymentCreate,
     CarPaymentPatch,
@@ -125,6 +127,7 @@ def cards_list_endpoint(
 
 @router.post("/cards/balances", response_model=CardBalanceOut, status_code=status.HTTP_201_CREATED)
 def cards_create_endpoint(payload: CardBalanceIn, db: Session = Depends(get_db)) -> CardBalanceOut:
+    guard_card_balance_write(db, payload.payment_method_id)
     try:
         row = create_card_balance(
             db,
@@ -147,6 +150,14 @@ def cards_patch_endpoint(
     patch: CardBalancePatchIn,
     db: Session = Depends(get_db),
 ) -> CardBalanceOut:
+    row_before = db.get(CreditCardBalance, balance_id)
+    if row_before is None:
+        raise HTTPException(status_code=404, detail=f"Card balance {balance_id} not found")
+    # Both ends of the edit, as on savings: the card this row records and the
+    # card it would be reassigned to.
+    guard_card_balance_write(db, row_before.payment_method_id)
+    if patch.payment_method_id is not None:
+        guard_card_balance_write(db, patch.payment_method_id)
     try:
         row = update_card_balance(
             db, balance_id, CardBalancePatch(**patch.model_dump(exclude_unset=True))

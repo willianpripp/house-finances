@@ -19,6 +19,7 @@ from app.models.exchange_rate import ExchangeRate
 from app.models.household import HouseholdMember, SalaryLevel, WithholdingMerchant
 from app.models.import_log import ImportLog
 from app.models.income_entry import IncomeEntry
+from app.models.income_receipt import IncomeReceipt
 from app.models.merchant import Merchant
 from app.models.monthly_snapshot import MonthlySnapshot
 from app.models.payment_method import PaymentMethod
@@ -30,6 +31,7 @@ from app.models.pluggy_seen import PluggySeenTransaction
 from app.models.receivable import Receivable
 from app.models.statement_match_rule import StatementMatchRule
 from app.models.savings_snapshot import SavingsSnapshot
+from app.models.spend_goal import SpendGoal
 from app.models.transaction import Transaction
 from app.models.transfer_rule import TransferRule
 from app.models.user import User
@@ -49,6 +51,7 @@ __all__ = [
     "ImportLog",
     "ImportSource",
     "IncomeEntry",
+    "IncomeReceipt",
     "IncomeSource",
     "Merchant",
     "MonthlySnapshot",
@@ -66,6 +69,7 @@ __all__ = [
     "RecurrenceKind",
     "SalaryLevel",
     "SavingsSnapshot",
+    "SpendGoal",
     "Transaction",
     "TransferRule",
     "WithholdingMerchant",

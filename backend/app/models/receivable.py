@@ -12,6 +12,7 @@ from app.models.base import TimestampMixin
 from app.models.enums import Currency, ReceivableDirection
 from app.models.payment_method import PaymentMethod
 from app.models.person import Person
+from app.models.transaction import Transaction
 
 
 class Receivable(Base, TimestampMixin):
@@ -19,14 +20,18 @@ class Receivable(Base, TimestampMixin):
 
     OWED_TO_ME: a charge made on one of our cards, to be paid back later. A
     split across N people produces N rows sharing a `group_id`. The charge
-    stays in the ledger as normal spending; this table only tracks who owes
-    what until they settle (then it's extra income — handled at settle time,
-    not here).
+    stays in the ledger as normal spending; settling posts the payback as a
+    NEGATIVE transaction (a refund) that nets that spending back down, never
+    as income — see `app/services/receivables.py` for why.
 
     I_OWE: someone else paid and we owe them our share. Nothing is in the
-    ledger, because the money never left our accounts; the real expense is
-    logged manually when we actually pay them back. Settling only marks the
-    debt closed — same as the other direction."""
+    ledger while the debt is open, because the money never left our accounts;
+    settling posts the real expense, dated the day we paid them back.
+
+    Either way `settled_transaction_id` points at the ledger row that settles
+    this receivable, and `settled_transaction_autocreated` says whether we
+    made that row or merely recognised an already-imported bank line as the
+    payback. Unsettling deletes the former and only unlinks the latter."""
 
     __tablename__ = "receivables"
 
@@ -61,8 +66,23 @@ class Receivable(Base, TimestampMixin):
     )
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # The ledger row that settles this receivable. SET NULL on delete: removing
+    # a transaction on /transactions must not cascade into the receivable.
+    settled_transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL")
+    )
+    # True when the settle flow created that row; False when it linked to a
+    # transaction that was already in the ledger (an imported bank line).
+    # Unsettle reads this to decide between deleting and unlinking.
+    settled_transaction_autocreated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa_false(), nullable=False
+    )
+
     person: Mapped[Person] = relationship(Person, lazy="joined")
     payment_method: Mapped[PaymentMethod | None] = relationship(PaymentMethod, lazy="joined")
+    settled_transaction: Mapped[Transaction | None] = relationship(
+        Transaction, lazy="joined"
+    )
 
     def __repr__(self) -> str:
         return (
