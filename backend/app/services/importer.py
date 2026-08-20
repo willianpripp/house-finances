@@ -35,6 +35,7 @@ from app.services.categorizer import Categorizer
 from app.services.match_rules import load_match_rules
 from app.services.parsers import detect, run_cc_parser
 from app.services.parsers.types import ParseResult
+from app.services.pending_supersede import plan_supersede, superseded_pending_ids
 from app.services.recurrence import (
     amount_matches_prior,
     find_prior_recurring,
@@ -57,6 +58,13 @@ class TransactionPreviewRow(BaseModel):
     in_intra_file_group: bool  # multiple rows in this file share date+merchant+amount
     is_pending: bool = False   # Plaid pending (provisional) — amount may change when it posts
     already_imported: bool = False  # handled in a prior review (in transactions or seen-set)
+    # Pending→posted supersede (services/pending_supersede.py). A posted row
+    # that replaces a committed pending one is neither NEW nor DUP: commit
+    # updates that ledger row in place, so it gets its own preview state.
+    supersedes_transaction_id: int | None = None
+    supersedes_prior_amount: Decimal | None = None
+    amount_changed: bool = False       # posted amount differs from the pending one
+    superseded_by_posted: bool = False  # this pending row's posted twin is in this batch
 
 
 class PaymentPreviewRow(BaseModel):
@@ -88,6 +96,12 @@ class ImportCommitResult(BaseModel):
     new_merchants_created: int
     rules_created: int = 0
     rules_skipped: list[str] = []  # human-readable reason per skipped rule
+    # Pending→posted supersede: rows updated in place, and pending rows dropped
+    # because their posted twin was in the same batch. Neither is an insert nor
+    # a duplicate, so they get their own counters instead of hiding in those.
+    pending_reconciled: int = 0
+    pending_superseded: int = 0
+    supersede_notes: list[str] = []
 
 
 # Recognise installment markers in the parsed description so the importer can
@@ -264,6 +278,13 @@ def build_preview(
     new_merchants: set[str] = set()
     duplicate_count = 0
 
+    # Pending→posted: which pending ids the rows in this batch declare they
+    # replace. Computed up front so the state a row gets does not depend on
+    # the order the provider listed the two versions in.
+    batch_superseded = superseded_pending_ids(
+        (p.raw or {}).get("pending_transaction_id") for p in parse_result.transactions
+    )
+
     for idx, parsed in enumerate(parse_result.transactions):
         match = classifications[idx]
         key = (parsed.transaction_date, match.merchant_name, parsed.amount)
@@ -300,11 +321,26 @@ def build_preview(
             suggested_owner = default_owner_user_id
             is_dup = suggested_owner in existing_owners
 
+        supersede = plan_supersede(
+            session,
+            pending_transaction_id=(parsed.raw or {}).get("pending_transaction_id"),
+            amount=parsed.amount,
+        )
+        superseded_by_posted = (
+            (parsed.raw or {}).get("plaid_transaction_id") in batch_superseded
+        )
+
         if not is_dup and (
             _plaid_id_exists(session, (parsed.raw or {}).get("plaid_transaction_id"))
             or _pluggy_id_exists(session, (parsed.raw or {}).get("pluggy_transaction_id"))
         ):
             is_dup = True
+
+        # A supersede is not a duplicate: commit updates the prior row rather
+        # than skipping the line. Its own state wins over the DUP flag the
+        # signature dedupe may have raised against the row it will update.
+        if supersede is not None:
+            is_dup = False
 
         if is_dup:
             duplicate_count += 1
@@ -325,6 +361,10 @@ def build_preview(
             owner_user_id=suggested_owner,
             in_intra_file_group=in_group,
             is_pending=bool((parsed.raw or {}).get("pending")),
+            supersedes_transaction_id=supersede.prior_id if supersede else None,
+            supersedes_prior_amount=supersede.prior_amount if supersede else None,
+            amount_changed=bool(supersede and supersede.amount_changed),
+            superseded_by_posted=superseded_by_posted,
         ))
 
     payment_rows = [
@@ -344,7 +384,15 @@ def build_preview(
         filename=filename,
         transactions=rows,
         payments=payment_rows,
-        new_count=sum(1 for r in rows if not r.is_duplicate),
+        # "New" = will land as a new ledger row. A supersede updates an
+        # existing row and a pending row whose posted twin is in this batch is
+        # dropped, so neither counts here.
+        new_count=sum(
+            1 for r in rows
+            if not r.is_duplicate
+            and r.supersedes_transaction_id is None
+            and not r.superseded_by_posted
+        ),
         duplicate_count=duplicate_count,
         skipped_count=parse_result.skipped,
         new_merchants=sorted(new_merchants),
@@ -432,10 +480,21 @@ def commit_import(
     new_merchants = 0
     rules_created = 0
     reconciled = 0  # pending rows updated in place by a posted version
+    superseded = 0  # pending rows dropped: their posted twin is in this batch
     rules_skipped: list[str] = []
+    supersede_notes: list[str] = []
     seen_signatures: set[tuple[date, int, Decimal, int, int]] = set()
     skip_set = skip_indices or set()
     convs = contract_conversions or {}
+
+    # Pending→posted, computed over the rows this commit will actually process:
+    # a posted row the user unticked must not suppress the pending row they
+    # kept. See services/pending_supersede.py for the two shapes this handles.
+    batch_superseded = superseded_pending_ids(
+        (parsed.raw or {}).get("pending_transaction_id")
+        for idx, parsed in enumerate(parse_result.transactions)
+        if idx not in skip_set
+    )
 
     def _override_at(arr: list | None, idx: int):
         if arr is None or idx >= len(arr):
@@ -445,6 +504,51 @@ def commit_import(
     for idx, parsed in enumerate(parse_result.transactions):
         if idx in skip_set:
             continue
+
+        raw = parsed.raw or {}
+        plaid_tx_id = raw.get("plaid_transaction_id")
+        pluggy_tx_id = raw.get("pluggy_transaction_id")
+        is_pending = bool(raw.get("pending"))
+
+        # Pending→posted supersede, resolved before anything is created for
+        # this row (no merchant gets created for a line that will be dropped).
+        # A pending row whose posted version is in this same batch is the
+        # duplicate: committing both is what put two rows in the ledger for one
+        # purchase. See services/pending_supersede.py.
+        if plaid_tx_id and plaid_tx_id in batch_superseded:
+            superseded += 1
+            supersede_notes.append(
+                f"Dropped pending row {parsed.transaction_date} "
+                f"'{(parsed.description or '')[:40]}': its posted version is in "
+                f"this same batch"
+            )
+            continue
+
+        # A posted row that replaces an already-committed pending one updates
+        # that ledger row in place (new id, descriptor, date, amount, pending
+        # cleared) and keeps everything human on it.
+        supersede = plan_supersede(
+            session,
+            pending_transaction_id=raw.get("pending_transaction_id"),
+            amount=parsed.amount,
+        )
+        if supersede is not None:
+            note = (
+                f"Pending→posted {parsed.transaction_date}: updated ledger row "
+                f"#{supersede.prior_id} in place, no duplicate"
+            )
+            if supersede.amount_changed:
+                note += f" (amount {supersede.prior_amount} -> {supersede.amount})"
+            supersede.apply(
+                plaid_transaction_id=plaid_tx_id,
+                description=parsed.description,
+                transaction_date=parsed.transaction_date,
+                pending=is_pending,
+            )
+            reconciled += 1
+            supersede_notes.append(note)
+            continue
+
         match = categorizer.classify(parsed.description, parsed.amount)
 
         # Category override (None = keep categorizer's pick).
@@ -473,28 +577,6 @@ def commit_import(
             if owner_user_ids is not None and idx < len(owner_user_ids) and owner_user_ids[idx]
             else default_owner_user_id
         )
-
-        plaid_tx_id = (parsed.raw or {}).get("plaid_transaction_id")
-        pluggy_tx_id = (parsed.raw or {}).get("pluggy_transaction_id")
-        is_pending = bool((parsed.raw or {}).get("pending"))
-
-        # Pending→posted reconciliation: if this posted row replaces a
-        # previously-committed pending one (Plaid links them via
-        # pending_transaction_id), update that row in place (new id + final
-        # amount/date) instead of inserting — guarantees no duplicate when a
-        # pending charge later posts (often with a changed amount).
-        pending_src_id = (parsed.raw or {}).get("pending_transaction_id")
-        if pending_src_id:
-            prior = session.scalar(
-                select(Transaction).where(Transaction.plaid_transaction_id == pending_src_id)
-            )
-            if prior is not None:
-                prior.plaid_transaction_id = plaid_tx_id
-                prior.amount = parsed.amount
-                prior.transaction_date = parsed.transaction_date
-                prior.pending = is_pending  # posted version clears pending
-                reconciled += 1
-                continue
 
         existing_owners = _existing_owner_ids(
             session,
@@ -645,4 +727,7 @@ def commit_import(
         new_merchants_created=new_merchants,
         rules_created=rules_created,
         rules_skipped=rules_skipped,
+        pending_reconciled=reconciled,
+        pending_superseded=superseded,
+        supersede_notes=supersede_notes,
     )

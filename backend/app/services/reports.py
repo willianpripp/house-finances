@@ -7,13 +7,32 @@ Live months (no snapshot yet, or is_finalized=False) are computed on the
 fly from transactions/income/balances. The conversion rule:
 
   - amounts in transaction.currency stay in their native unit
-  - to compute USD-denominated totals (income, spending, surplus, debt,
-    savings, net worth), BRL amounts are divided by exchange_rate.effective
-    for the month being reported
-  - if no exchange_rate row exists for the month, we use the latest one
-    whose rate_date <= last day of the month
+  - money that MOVED on a day converts at the rate in force that day
+  - a BALANCE (savings, card and loan debt, assets) is a value as of the end
+    of the month being reported, so it converts at the month-end rate: the
+    latest row whose rate_date <= the last day of the month
   - per-installment rows: we use COALESCE(installment_value, amount), so
     a 12x purchase contributes only its monthly slice
+
+**Money that moved converts at ITS OWN date's rate (2026-08-20).** Income
+landed first (per receipt, `services/income.convert_entry_to_usd`) and spending
+followed the same day (per transaction, `_spend_rows` below). Both exist for
+one reason: converting a whole period at "the latest rate on or before the
+month end" re-priced the open month every time the daily PTAX run landed a row,
+so a purchase made on the 5th was worth one thing in the morning and another
+after the evening fetch, with nothing having happened in the household's
+finances.
+
+Neither grain is duplicated anywhere. Income has one call site
+(`_compute_income`) and spending has one (`_month_spending`), both reached by
+the monthly AND the annual report through `_month_totals`, so no two surfaces
+can report different numbers for the same month. `tests/test_income_fx.py` and
+`tests/test_transaction_fx.py` pin that month by month.
+
+The month-end rate is still resolved here and still passed down: balances need
+it, and two income cases fall back to it (a pre-ledger lump, and a monthly row
+with no receipts). Spending has no such fallback, because every transaction
+has a real date of its own.
 
 The live computation is a best-effort approximation. The "Close Month" flow
 shows these numbers, lets the user adjust transactions, then freezes them
@@ -27,7 +46,7 @@ from datetime import date as date_type
 from datetime import datetime, time, timezone
 from decimal import Decimal
 
-from sqlalchemy import and_, case, extract, func, select
+from sqlalchemy import and_, extract, func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -44,6 +63,8 @@ from app.models import (
     SavingsSnapshot,
     Transaction,
 )
+from app.services import income as income_service
+from app.services.exchange_rates import DatedRate, DatedRateCache
 
 ZERO = Decimal("0.00")
 TAXES_CATEGORY_NAME = "Taxes"
@@ -70,6 +91,13 @@ def _resolve_rate(session: Session, year: int, month: int) -> ExchangeRate | Non
         .order_by(ExchangeRate.rate_date.desc())
         .limit(1)
     )
+
+
+def _month_end_rate(session: Session, year: int, month: int) -> DatedRate:
+    """`_resolve_rate` as a DatedRate, so the no-row case carries its own flag
+    instead of every caller remembering to substitute 1."""
+    row = _resolve_rate(session, year, month)
+    return DatedRate.from_row(row) if row is not None else DatedRate.unavailable()
 
 
 def _rate_inside_month(session: Session, year: int, month: int) -> ExchangeRate | None:
@@ -105,6 +133,14 @@ def _finalize_status(
 
 
 def _to_usd(amount: Decimal, currency: str, effective: Decimal) -> Decimal:
+    """Convert a BALANCE at one given rate.
+
+    Money that moved on a day converts at that day's rate instead, via
+    `_usd_on_date` (spending) or `income.convert_entry_to_usd` (income). This
+    helper is for savings, card and loan debt and assets: those are values as
+    of a point in time, so one rate for that point is the right answer, not a
+    per-row one.
+    """
     if currency == Currency.USD.value:
         return Decimal(amount)
     return Decimal(amount) / Decimal(effective)
@@ -118,6 +154,13 @@ class IncomeBucket:
     amount_native: Decimal
     currency: str
     amount_usd: Decimal
+    # How amount_usd was arrived at, and whether any rate behind it was a
+    # fallback rather than the rate of the day. See
+    # services/income.RATE_BASIS_* and convert_entry_to_usd. Defaulted so a
+    # caller building a bucket by hand still gets the honest "already USD"
+    # answer rather than a claim it cannot back.
+    rate_basis: str = income_service.RATE_BASIS_USD
+    approximate: bool = False
 
 
 @dataclass
@@ -129,6 +172,11 @@ class CategoryBucket:
     amount_usd: Decimal
     transaction_count: int
     category_icon: str | None = None
+    # True when at least one transaction in this category converted with a
+    # fallback rate (no exchange_rates row at or before its transaction_date).
+    # The same meaning IncomeBucket.approximate has, at the category grain, and
+    # what MonthTotals.spending_rate_approximate is derived from.
+    approximate: bool = False
 
 
 @dataclass
@@ -164,6 +212,19 @@ class MonthTotals:
 
     can_finalize: bool = False
     finalize_blocked_reason: str | None = None
+
+    # True when any income bucket in this month was converted with a fallback
+    # rate (no exchange_rates row at or before a receipt's date). Derived from
+    # the buckets by whichever path built these totals, so the annual view —
+    # which carries totals and no buckets — can still say so.
+    income_rate_approximate: bool = False
+
+    # The same, for the spending side: set when any transaction counted toward
+    # this month's spending had no exchange_rates row at or before its
+    # transaction_date. Separate from the income flag because the two answer
+    # different questions ("is the income figure exact" / "is the spending
+    # figure exact") and a period can easily have one without the other.
+    spending_rate_approximate: bool = False
 
     # Per-salary tax breakdown (USD taxes -> partner, BRL taxes -> primary).
     # Re-derived from transactions; not persisted in monthly_snapshots so
@@ -213,31 +274,195 @@ class MonthlyReport:
 
 # ---------- live computation ----------
 
-def _compute_income(session: Session, year: int, month: int, effective: Decimal) -> tuple[
-    list[IncomeBucket], dict[str, Decimal]
-]:
+def _compute_income(
+    session: Session,
+    year: int,
+    month: int,
+    month_end: DatedRate,
+    rates: DatedRateCache | None = None,
+) -> tuple[list[IncomeBucket], dict[str, Decimal]]:
+    """The month's income per source, in native units and in USD.
+
+    The single place income becomes USD, for every report. `amount_native`
+    stays the derived monthly total on `income_entries` (what warnings.py and
+    home.py read); `amount_usd` is the per-receipt conversion of that same
+    total, which is the sum of the receipts the total is made of. The two
+    describe one number, not two.
+
+    One `DatedRateCache` per month, shared across the five sources (and, when
+    the caller passes its own, with that month's spending conversion too): the
+    annual report renders twelve of these in one request and receipt dates
+    repeat.
+    """
     rows = session.scalars(
         select(IncomeEntry).where(
             and_(IncomeEntry.year == year, IncomeEntry.month == month)
         )
     ).all()
+    rates = rates if rates is not None else DatedRateCache(session)
     buckets: list[IncomeBucket] = []
     by_source: dict[str, Decimal] = {s.value: ZERO for s in IncomeSource}
     for r in rows:
-        usd = _to_usd(r.amount, r.currency.value, effective)
+        converted = income_service.convert_entry_to_usd(
+            session, r, month_end=month_end, rates=rates
+        )
         buckets.append(IncomeBucket(
             source=r.source.value,
             amount_native=Decimal(r.amount),
             currency=r.currency.value,
-            amount_usd=_q(usd),
+            amount_usd=_q(converted.amount_usd),
+            rate_basis=converted.rate_basis,
+            approximate=converted.approximate,
         ))
-        by_source[r.source.value] = by_source.get(r.source.value, ZERO) + usd
+        by_source[r.source.value] = (
+            by_source.get(r.source.value, ZERO) + converted.amount_usd
+        )
     return buckets, by_source
 
 
-def _compute_taxes_by_salary(
-    session: Session, year: int, month: int, effective: Decimal
-) -> dict[str, Decimal]:
+# ---------- spending conversion (per transaction date) ----------
+
+
+@dataclass(frozen=True)
+class SpendRow:
+    """One transaction's contribution to a period's spending, already in USD.
+
+    `amount_native` is the installment slice, not the purchase price: a 12x
+    buy contributes one twelfth to each of twelve months. `amount_usd` is NOT
+    quantized, for the same reason `income.EntryConversion.amount_usd` is not:
+    rounding every row to the cent before summing a few hundred of them moves
+    the total. Quantize at the display edge, once.
+    """
+
+    transaction_id: int
+    transaction_date: date_type
+    category_id: int
+    category_name: str
+    category_type: str
+    category_color: str
+    category_icon: str | None
+    excluded_from_spending: bool
+    currency: str
+    amount_native: Decimal
+    amount_usd: Decimal
+    approximate: bool
+
+
+def _usd_on_date(
+    amount: Decimal, currency: str, on_date: date_type, rates: DatedRateCache
+) -> tuple[Decimal, bool]:
+    """Money in `currency` that moved on `on_date`, in USD, and whether the
+    rate behind it was a fallback.
+
+    The transaction-grain twin of `income.convert_entry_to_usd`'s inner loop.
+    USD reads no rate at all: a row is converted by ITS OWN currency, never by
+    its account's or its period's, which is what keeps the never-mix-currencies
+    hard rule true. Weekends and holidays need no special case, because
+    `rate_for_date` takes the latest row at or before the day and PTAX
+    publishes business days, so a Saturday purchase converts at Friday's close.
+    """
+    if currency == Currency.USD.value:
+        return Decimal(amount), False
+    rate = rates.for_date(on_date)
+    return Decimal(amount) / rate.effective, rate.approximate
+
+
+def _spend_rows(
+    session: Session, year: int, month: int, rates: DatedRateCache
+) -> list[SpendRow]:
+    """Every transaction dated in the month, converted at its own date's rate.
+
+    THE single place a transaction becomes USD. One query for the whole month,
+    columns only (no ORM entities, no relationship loads), including the
+    `exclude_from_spending` categories so that the counted total, the excluded
+    section and the per-salary tax split all derive from one conversion instead
+    of three.
+
+    Cost: one query here, plus the one `rates.warm` already spent on the
+    month's rate window. Deliberately NOT one rate lookup per row, which is
+    what a naive per-date conversion would cost and what
+    `test_transaction_fx.py` pins against.
+    """
+    amount_expr = func.coalesce(Transaction.installment_value, Transaction.amount)
+    stmt = (
+        select(
+            Transaction.id,
+            Transaction.transaction_date,
+            Transaction.currency,
+            amount_expr.label("amount_native"),
+            Category.id.label("category_id"),
+            Category.name,
+            Category.type,
+            Category.color,
+            Category.icon,
+            Category.exclude_from_spending,
+        )
+        .join(Category, Category.id == Transaction.category_id)
+        .where(
+            extract("year", Transaction.transaction_date) == year,
+            extract("month", Transaction.transaction_date) == month,
+        )
+        .order_by(Category.type, Transaction.transaction_date, Transaction.id)
+    )
+    out: list[SpendRow] = []
+    for row in session.execute(stmt).all():
+        native = Decimal(row.amount_native)
+        usd, approximate = _usd_on_date(
+            native, row.currency.value, row.transaction_date, rates
+        )
+        out.append(SpendRow(
+            transaction_id=row.id,
+            transaction_date=row.transaction_date,
+            category_id=row.category_id,
+            category_name=row.name,
+            category_type=row.type.value,
+            category_color=row.color,
+            category_icon=row.icon,
+            excluded_from_spending=row.exclude_from_spending,
+            currency=row.currency.value,
+            amount_native=native,
+            amount_usd=usd,
+            approximate=approximate,
+        ))
+    return out
+
+
+# The order the old SQL `ORDER BY Category.type` produced: a Postgres enum
+# sorts by declaration order, not alphabetically. Grouping moved into Python,
+# so the order has to move with it or the category chart reshuffles for no
+# reason.
+_CATEGORY_TYPE_ORDER = {t.value: i for i, t in enumerate(CategoryType)}
+
+
+def _category_buckets(rows: list[SpendRow]) -> list[CategoryBucket]:
+    """Group already-converted rows by category, ordered as the SQL GROUP BY
+    used to order them (category type, then name)."""
+    buckets: dict[int, CategoryBucket] = {}
+    for r in rows:
+        bucket = buckets.get(r.category_id)
+        if bucket is None:
+            bucket = buckets[r.category_id] = CategoryBucket(
+                category_id=r.category_id,
+                category_name=r.category_name,
+                category_type=r.category_type,
+                color=r.category_color,
+                amount_usd=ZERO,
+                transaction_count=0,
+                category_icon=r.category_icon,
+            )
+        bucket.amount_usd += r.amount_usd
+        bucket.transaction_count += 1
+        bucket.approximate = bucket.approximate or r.approximate
+    ordered = sorted(
+        buckets.values(),
+        key=lambda b: (_CATEGORY_TYPE_ORDER.get(b.category_type, 0), b.category_name),
+    )
+    for b in ordered:
+        b.amount_usd = _q(b.amount_usd)
+    return ordered
+
+
+def _taxes_by_salary(rows: list[SpendRow]) -> dict[str, Decimal]:
     """Split the Taxes category total by transaction currency, keyed by
     income-source name. Heuristic: USD-denominated taxes (Federal / State
     withholdings) attach to PARTNER_SALARY (the US paycheck), BRL taxes
@@ -245,78 +470,78 @@ def _compute_taxes_by_salary(
     paycheck). Returns USD-equivalent totals.
 
     Used by the monthly report to display a "taxes: $XXX" hint under each
-    salary bucket so the user can sanity-check the withholding ratio.
+    salary bucket so the user can sanity-check the withholding ratio. Derived
+    from the same converted rows as the category buckets, so the hint and the
+    Taxes bucket cannot drift apart.
     """
-    amount_expr = func.coalesce(Transaction.installment_value, Transaction.amount)
-    rows = session.execute(
-        select(Transaction.currency, func.sum(amount_expr))
-        .join(Category, Category.id == Transaction.category_id)
-        .where(
-            extract("year", Transaction.transaction_date) == year,
-            extract("month", Transaction.transaction_date) == month,
-            Category.name == TAXES_CATEGORY_NAME,
-        )
-        .group_by(Transaction.currency)
-    ).all()
     out: dict[str, Decimal] = {
         IncomeSource.PARTNER_SALARY.value: ZERO,
         IncomeSource.PRIMARY_SALARY.value: ZERO,
     }
-    for currency, total in rows:
-        if total is None:
+    for r in rows:
+        if r.category_name != TAXES_CATEGORY_NAME:
             continue
-        usd = _to_usd(Decimal(total), currency.value, effective)
-        if currency == Currency.USD:
-            out[IncomeSource.PARTNER_SALARY.value] += usd
+        if r.currency == Currency.USD.value:
+            out[IncomeSource.PARTNER_SALARY.value] += r.amount_usd
         else:  # BRL → primary earner
-            out[IncomeSource.PRIMARY_SALARY.value] += usd
+            out[IncomeSource.PRIMARY_SALARY.value] += r.amount_usd
     return {k: _q(v) for k, v in out.items()}
 
 
-def _compute_spending_by_category(
-    session: Session, year: int, month: int, effective: Decimal, *, excluded: bool = False
-) -> list[CategoryBucket]:
-    amount_expr = func.coalesce(Transaction.installment_value, Transaction.amount)
-    usd_expr = case(
-        (Transaction.currency == Currency.BRL, amount_expr / Decimal(effective)),
-        else_=amount_expr,
+@dataclass
+class MonthSpending:
+    """One month's spending, converted once and shared by every surface.
+
+    Built by `_month_spending` and carried through `_month_totals`, so the
+    monthly KPI, the category chart, the transaction tables, the excluded
+    section and the annual roll-up are all views of the same conversion. A
+    surface that re-derived its own would be free to disagree, which is the
+    class of bug this type exists to make impossible.
+    """
+
+    rows: list[SpendRow]
+    by_category: list[CategoryBucket]
+    excluded_categories: list[CategoryBucket]
+    taxes_by_salary: dict[str, Decimal]
+    approximate: bool
+
+    def by_transaction(self) -> dict[int, SpendRow]:
+        return {r.transaction_id: r for r in self.rows}
+
+
+def _month_spending(
+    session: Session, year: int, month: int, rates: DatedRateCache
+) -> MonthSpending:
+    rows = _spend_rows(session, year, month, rates)
+    counted = [r for r in rows if not r.excluded_from_spending]
+    excluded = [r for r in rows if r.excluded_from_spending]
+    return MonthSpending(
+        rows=rows,
+        by_category=_category_buckets(counted),
+        excluded_categories=_category_buckets(excluded),
+        taxes_by_salary=_taxes_by_salary(rows),
+        # Only the counted rows: the flag sits beside the spending total, and an
+        # excluded category (loan principal, transfers) is not in that total.
+        approximate=any(r.approximate for r in counted),
     )
-    stmt = (
-        select(
-            Category.id,
-            Category.name,
-            Category.type,
-            Category.color,
-            Category.icon,
-            func.sum(usd_expr).label("amount_usd"),
-            func.count(Transaction.id).label("count"),
-        )
-        .join(Category, Category.id == Transaction.category_id)
-        .where(
-            extract("year", Transaction.transaction_date) == year,
-            extract("month", Transaction.transaction_date) == month,
-            Category.exclude_from_spending.is_(excluded),
-        )
-        .group_by(Category.id, Category.name, Category.type, Category.color, Category.icon)
-        .order_by(Category.type, Category.name)
-    )
-    return [
-        CategoryBucket(
-            category_id=row.id,
-            category_name=row.name,
-            category_type=row.type.value,
-            color=row.color,
-            amount_usd=_q(Decimal(row.amount_usd)),
-            transaction_count=row.count,
-            category_icon=row.icon,
-        )
-        for row in session.execute(stmt).all()
-    ]
 
 
 def _fetch_transaction_details(
-    session: Session, year: int, month: int, effective: Decimal, *, excluded: bool = False
+    session: Session,
+    year: int,
+    month: int,
+    spending: MonthSpending,
+    *,
+    excluded: bool = False,
 ) -> list[TransactionDetail]:
+    """The per-transaction table under the monthly report.
+
+    Amount and USD figure are read from `spending`, never recomputed: a detail
+    row that priced itself could differ from the category bucket it sits under.
+    Only the presentational fields (merchant, account, owner) come from the ORM
+    rows loaded here.
+    """
+    converted = spending.by_transaction()
     rows = session.scalars(
         select(Transaction)
         .join(Category, Category.id == Transaction.category_id)
@@ -329,8 +554,10 @@ def _fetch_transaction_details(
     ).all()
     out: list[TransactionDetail] = []
     for t in rows:
-        amount = Decimal(t.installment_value) if t.installment_value is not None else Decimal(t.amount)
-        usd = _to_usd(amount, t.currency.value, effective)
+        # Both queries run in the same transaction over the same month, and the
+        # converted set covers excluded and counted rows alike, so a missing key
+        # is a broken invariant rather than a data case. Let it raise.
+        row = converted[t.id]
         out.append(TransactionDetail(
             id=t.id,
             transaction_date=t.transaction_date,
@@ -342,9 +569,9 @@ def _fetch_transaction_details(
             category_color=t.category.color,
             category_icon=t.category.icon,
             owner_name=t.created_by.name if t.created_by else None,
-            amount_native=amount,
+            amount_native=row.amount_native,
             currency=t.currency.value,
-            amount_usd=_q(usd),
+            amount_usd=_q(row.amount_usd),
             installment_current=t.installment_current,
             installment_total=t.installment_total,
             description=t.description,
@@ -433,13 +660,25 @@ def _compute_debt_at(session: Session, as_of: datetime, effective: Decimal) -> D
     return total
 
 
-def _live_totals(session: Session, year: int, month: int) -> tuple[MonthTotals, list[IncomeBucket], list[CategoryBucket]]:
+def _live_totals(session: Session, year: int, month: int) -> tuple[MonthTotals, list[IncomeBucket], MonthSpending]:
     rate = _resolve_rate(session, year, month)
-    effective = Decimal(rate.effective) if rate is not None else Decimal("1")
+    month_end = _month_end_rate(session, year, month)
+    effective = month_end.effective
 
-    income_buckets, by_source = _compute_income(session, year, month, effective)
-    by_category = _compute_spending_by_category(session, year, month, effective)
-    taxes_by_salary = _compute_taxes_by_salary(session, year, month, effective)
+    # One rate cache for the whole month, warmed in a single query before
+    # anything asks it a question. Income (per receipt) and spending (per
+    # transaction) then share it, so the render costs one rate query for the
+    # month rather than one per date money moved.
+    first_day, last_day = _month_bounds(year, month)
+    rates = DatedRateCache(session)
+    rates.warm(first_day, last_day)
+
+    income_buckets, by_source = _compute_income(
+        session, year, month, month_end, rates=rates
+    )
+    spending = _month_spending(session, year, month, rates)
+    by_category = spending.by_category
+    taxes_by_salary = spending.taxes_by_salary
 
     primary = by_source.get(IncomeSource.PRIMARY_SALARY.value, ZERO)
     partner = by_source.get(IncomeSource.PARTNER_SALARY.value, ZERO)
@@ -465,7 +704,6 @@ def _live_totals(session: Session, year: int, month: int) -> tuple[MonthTotals, 
     total_spending = fixed + variable
     surplus = net_income - total_spending
 
-    _, last_day = _month_bounds(year, month)
     end_of_month = datetime.combine(last_day, time(23, 59, 59))
     savings_total = _compute_savings_at(session, end_of_month, effective)
     debt_total = _compute_debt_at(session, end_of_month, effective)
@@ -507,8 +745,10 @@ def _live_totals(session: Session, year: int, month: int) -> tuple[MonthTotals, 
         total_worth_usd=_q(total_worth),
         can_finalize=can_finalize,
         finalize_blocked_reason=blocked_reason,
+        income_rate_approximate=any(b.approximate for b in income_buckets),
+        spending_rate_approximate=spending.approximate,
     )
-    return totals, income_buckets, by_category
+    return totals, income_buckets, spending
 
 
 def _snapshot_to_totals(
@@ -566,11 +806,20 @@ def _snapshot_to_totals(
 
 
 def _month_totals(session: Session, year: int, month: int) -> tuple[
-    MonthTotals, list[IncomeBucket], list[CategoryBucket]
+    MonthTotals, list[IncomeBucket], MonthSpending
 ]:
     """Returns totals + supporting buckets. Income/category buckets are
     always live-computed (snapshots don't store them per-row), but totals
-    come from the snapshot when finalized."""
+    come from the snapshot when finalized.
+
+    A finalized month therefore shows frozen spending TOTALS beside a live
+    per-transaction-date breakdown, and the two can differ by the rate grain:
+    the totals were frozen when the month was closed at one month-end rate,
+    while the breakdown re-derives at each row's own date. That is the same
+    kind of gap a transaction edited after closing already opened, it is
+    visible rather than silent, and `close_month` freezes the per-date figure
+    from now on, so reopening and re-closing a month realigns the two.
+    """
     snap = session.scalar(
         select(MonthlySnapshot).where(
             MonthlySnapshot.year == year, MonthlySnapshot.month == month
@@ -578,20 +827,32 @@ def _month_totals(session: Session, year: int, month: int) -> tuple[
     )
     if snap is not None and snap.is_finalized:
         rate = snap.exchange_rate
-        effective = Decimal(rate.effective) if rate else _resolve_rate_value(session, year, month)
+        # The rate frozen into the snapshot when the month was closed, not
+        # today's. Income conversion gets the same one as its month-end
+        # fallback, and the balances are valued with it, so a finalized month
+        # keeps reporting what it was closed at.
+        month_end = (
+            DatedRate.from_row(rate)
+            if rate is not None
+            else _month_end_rate(session, year, month)
+        )
+        effective = month_end.effective
+        first_day, last_day = _month_bounds(year, month)
+        rates = DatedRateCache(session)
+        rates.warm(first_day, last_day)
         from app.services.assets import assets_total_usd
         assets_total = assets_total_usd(session, effective)
-        taxes_by_salary = _compute_taxes_by_salary(session, year, month, effective)
-        totals = _snapshot_to_totals(snap, assets_total=assets_total, taxes_by_salary=taxes_by_salary)
-        income_buckets, _ = _compute_income(session, year, month, effective)
-        by_category = _compute_spending_by_category(session, year, month, effective)
-        return totals, income_buckets, by_category
+        spending = _month_spending(session, year, month, rates)
+        totals = _snapshot_to_totals(
+            snap, assets_total=assets_total, taxes_by_salary=spending.taxes_by_salary
+        )
+        income_buckets, _ = _compute_income(
+            session, year, month, month_end, rates=rates
+        )
+        totals.income_rate_approximate = any(b.approximate for b in income_buckets)
+        totals.spending_rate_approximate = spending.approximate
+        return totals, income_buckets, spending
     return _live_totals(session, year, month)
-
-
-def _resolve_rate_value(session: Session, year: int, month: int) -> Decimal:
-    rate = _resolve_rate(session, year, month)
-    return Decimal(rate.effective) if rate else Decimal("1")
 
 
 @dataclass
@@ -602,6 +863,8 @@ class AnnualCategoryBucket:
     color: str
     amount_usd: Decimal
     category_icon: str | None = None
+    # Any month's contribution to this category converted with a fallback rate.
+    approximate: bool = False
 
 
 @dataclass
@@ -621,17 +884,23 @@ class AnnualReport:
     end_assets_usd: Decimal
     end_total_worth_usd: Decimal
     top_categories: list[AnnualCategoryBucket]
+    # Any month in the year whose spending conversion used a fallback rate. The
+    # annual page shows totals and no per-transaction detail, so without this
+    # the estimate would be invisible on the one surface that aggregates it.
+    spending_rate_approximate: bool = False
 
 
 def annual_report(session: Session, year: int) -> AnnualReport:
     months: list[MonthTotals] = []
     category_totals: dict[int, AnnualCategoryBucket] = {}
     for m in range(1, 13):
-        totals, _, by_category = _month_totals(session, year, m)
+        totals, _, spending = _month_totals(session, year, m)
         months.append(totals)
         # Top-15 view: drop Taxes from the spending list (it's surfaced in its
-        # own KPI / chart). Sum across the 12 months keyed on category_id.
-        for c in by_category:
+        # own KPI / chart). Sum across the 12 months keyed on category_id. The
+        # buckets are the monthly report's own, so a category's annual figure is
+        # the sum of the twelve figures its monthly pages show.
+        for c in spending.by_category:
             if c.category_name == TAXES_CATEGORY_NAME:
                 continue
             existing = category_totals.get(c.category_id)
@@ -643,9 +912,11 @@ def annual_report(session: Session, year: int) -> AnnualReport:
                     color=c.color,
                     amount_usd=c.amount_usd,
                     category_icon=c.category_icon,
+                    approximate=c.approximate,
                 )
             else:
                 existing.amount_usd += c.amount_usd
+                existing.approximate = existing.approximate or c.approximate
 
     top_categories = sorted(
         category_totals.values(),
@@ -683,11 +954,13 @@ def annual_report(session: Session, year: int) -> AnnualReport:
         end_assets_usd=end.assets_total_usd,
         end_total_worth_usd=end.total_worth_usd,
         top_categories=top_categories,
+        spending_rate_approximate=any(t.spending_rate_approximate for t in months),
     )
 
 
 def monthly_report(session: Session, year: int, month: int) -> MonthlyReport:
-    totals, income, by_category = _month_totals(session, year, month)
+    totals, income, spending = _month_totals(session, year, month)
+    by_category = spending.by_category
 
     fixed_cats = [c for c in by_category
                   if c.category_type == CategoryType.FIXED.value
@@ -695,10 +968,7 @@ def monthly_report(session: Session, year: int, month: int) -> MonthlyReport:
     variable_cats = [c for c in by_category
                      if c.category_type == CategoryType.VARIABLE.value]
 
-    effective = (
-        Decimal(totals.rate_effective) if totals.rate_effective is not None else Decimal("1")
-    )
-    all_tx = _fetch_transaction_details(session, year, month, effective)
+    all_tx = _fetch_transaction_details(session, year, month, spending)
     fixed_tx = [t for t in all_tx
                 if t.category_type == CategoryType.FIXED.value
                 and t.category_name != TAXES_CATEGORY_NAME]
@@ -707,8 +977,8 @@ def monthly_report(session: Session, year: int, month: int) -> MonthlyReport:
 
     # Excluded-from-spending categories (loan principal, transfers): surfaced as
     # a separate section so the cash movement is visible without inflating spend.
-    excluded_cats = _compute_spending_by_category(session, year, month, effective, excluded=True)
-    excluded_tx = _fetch_transaction_details(session, year, month, effective, excluded=True)
+    excluded_cats = spending.excluded_categories
+    excluded_tx = _fetch_transaction_details(session, year, month, spending, excluded=True)
     excluded_total = sum((c.amount_usd for c in excluded_cats), ZERO)
 
     prior_year, prior_month = _prev_month(year, month)
@@ -719,17 +989,11 @@ def monthly_report(session: Session, year: int, month: int) -> MonthlyReport:
     )
     prior: MonthTotals | None
     if prior_snap is not None and prior_snap.is_finalized:
-        prior_rate = prior_snap.exchange_rate
-        prior_effective = (
-            Decimal(prior_rate.effective)
-            if prior_rate else _resolve_rate_value(session, prior_year, prior_month)
-        )
-        from app.services.assets import assets_total_usd
-        prior_assets = assets_total_usd(session, prior_effective)
-        prior_taxes_by_salary = _compute_taxes_by_salary(session, prior_year, prior_month, prior_effective)
-        prior = _snapshot_to_totals(
-            prior_snap, assets_total=prior_assets, taxes_by_salary=prior_taxes_by_salary
-        )
+        # The same path the reported month took, rather than a second
+        # assembly of the same snapshot: the diff badges then compare figures
+        # built by one conversion, and a change to that conversion cannot move
+        # this month's number without moving last month's.
+        prior = _month_totals(session, prior_year, prior_month)[0]
     else:
         # only compute prior live if there is any data at all to avoid empty noise
         has_data = session.scalar(

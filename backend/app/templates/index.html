@@ -84,6 +84,33 @@
         </ul>
     </div>
 
+    <!-- SPEND GOALS -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4" x-show="spendGoals?.length">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <span class="text-blue-600">🎯</span>
+                <span class="text-sm font-semibold text-slate-800">Spend goals</span>
+            </div>
+            <a href="/warnings" class="text-xs text-blue-600 hover:underline">view all →</a>
+        </div>
+        <div class="mt-2 space-y-2">
+            <template x-for="g in spendGoals || []" :key="g.id">
+                <div>
+                    <div class="flex items-center justify-between text-sm">
+                        <span class="text-slate-700" x-text="g.payment_method_name"></span>
+                        <span class="text-xs text-slate-500"
+                              x-text="`${formatAmount(g.spent)} / ${formatAmount(g.target_amount)} ${g.currency} · ${g.days_left}d left`"></span>
+                    </div>
+                    <div class="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden mt-1">
+                        <div class="h-full rounded-full"
+                             :class="g.completed ? 'bg-emerald-500' : (g.on_pace ? 'bg-blue-500' : 'bg-amber-500')"
+                             :style="`width: ${Math.min(100, parseFloat(g.pct))}%`"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
     <!-- BUTTON PANELS (3 groups) -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
 
@@ -105,7 +132,6 @@
             <div class="text-xs uppercase tracking-wider font-semibold text-emerald-900 mb-3">Entries</div>
             <div class="space-y-2">
                 <a href="/transactions" class="launcher-btn"><span class="emoji">✏️</span><span class="label">Transactions</span><span class="stat" x-text="stats?.transactions?.value || '—'"></span></a>
-                <a href="/income"       class="launcher-btn"><span class="emoji">💵</span><span class="label">Income</span><span class="stat" x-text="stats?.income?.value || '—'"></span></a>
                 <a href="/imports"      class="launcher-btn"><span class="emoji">📥</span><span class="label">Imports</span><span class="stat" x-text="stats?.imports_?.value || '—'"></span></a>
                 <a href="/connections"  class="launcher-btn"><span class="emoji">🔗</span><span class="label">Connections</span><span class="stat">banks &amp; review</span></a>
                 <a href="/receivables"  class="launcher-btn"><span class="emoji">🤝</span><span class="label">Receivables</span><span class="stat">who owes what</span></a>
@@ -116,7 +142,6 @@
         <div class="bg-gradient-to-br from-slate-50 to-slate-100 ring-1 ring-slate-400/30 rounded-lg p-4 shadow-sm">
             <div class="text-xs uppercase tracking-wider font-semibold text-slate-700 mb-3">Settings</div>
             <div class="space-y-2">
-                <a href="/exchange-rates" class="launcher-btn"><span class="emoji">💱</span><span class="label">Rates</span><span class="stat" x-text="stats?.rates?.value || '—'"></span></a>
                 <a href="/rules"          class="launcher-btn"><span class="emoji">🏷️</span><span class="label">Rules</span><span class="stat" x-text="stats?.rules?.value || '—'"></span></a>
                 <a href="/docs"           class="launcher-btn"><span class="emoji">📘</span><span class="label">API docs</span><span class="stat">Swagger UI</span></a>
                 <a href="/guide"          class="launcher-btn"><span class="emoji">📖</span><span class="label">Guide</span><span class="stat">how it works</span></a>
@@ -178,19 +203,27 @@ function homePage() {
     return {
         stats: null,
         warningsSummary: null,
+        spendGoals: [],
         greeting: '',
         todayLabel: '',
         monthLabel: '',
 
         async init() {
             this.computeGreeting();
-            await Promise.all([this.loadStats(), this.loadWarningsSummary()]);
+            await Promise.all([this.loadStats(), this.loadWarningsSummary(), this.loadSpendGoals()]);
         },
 
         async loadWarningsSummary() {
             try {
                 const r = await fetch('/api/warnings/summary');
                 if (r.ok) this.warningsSummary = await r.json();
+            } catch (e) { /* ignore */ }
+        },
+
+        async loadSpendGoals() {
+            try {
+                const r = await fetch('/api/spend-goals?active_only=true');
+                if (r.ok) this.spendGoals = await r.json();
             } catch (e) { /* ignore */ }
         },
 
@@ -224,6 +257,11 @@ function homePage() {
             if (Number.isNaN(n)) return '—';
             const arrow = n > 0.05 ? '▲' : n < -0.05 ? '▼' : '—';
             return `${arrow} ${Math.abs(n).toFixed(1)}%`;
+        },
+        formatAmount(amount) {
+            const n = parseFloat(amount);
+            if (Number.isNaN(n)) return '';
+            return n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
         },
     };
 }

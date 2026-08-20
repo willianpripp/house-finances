@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     fernet_key: str = ""
 
+    # family-calendar reminder push (services/calendar_push.py). Both optional:
+    # unset means no reminders are pushed and nothing else changes, which is
+    # what a fresh clone and any deployment without the calendar app gets.
+    # cal_api_url is the calendar's base URL (no trailing /api/reminders);
+    # cal_api_key is the bearer token it issues.
+    cal_api_url: str = ""
+    cal_api_key: str = ""
+
     # Emergency hatch for the boot-time schema guard: 1 logs the drift and
     # serves anyway instead of refusing to start. Never leave it on.
     allow_schema_drift: bool = False
@@ -55,6 +63,12 @@ class Settings(BaseSettings):
     # default) disables the filter entirely.
     transit_preauth_keyword: str = ""
     transit_fare_min: str = "2.00"
+
+    # Exchange-rate effective computation (see services/exchange_rates.py):
+    # effective = commercial * (1 + spread) * (1 + iof). Env-overridable so a
+    # bank/tax change doesn't need a code deploy. Defaults match v1.
+    exchange_rate_spread: str = "0.015"
+    exchange_rate_iof: str = "0.011"
 
 
 settings = Settings()

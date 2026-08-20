@@ -50,7 +50,14 @@
                 <div class="text-xs mt-0.5" x-html="diffBadge(report.totals.net_income_usd, report.prior?.net_income_usd, true)"></div>
             </div>
             <div class="pcard">
-                <div class="text-xs uppercase font-medium text-slate-500">Spending</div>
+                <div class="text-xs uppercase font-medium text-slate-500">
+                    Spending
+                    <!-- Twin of the desktop marker: a transaction this month
+                         had no exchange rate on or before its date. -->
+                    <span x-show="report.totals.spending_rate_approximate"
+                          class="text-[10px] normal-case text-amber-700"
+                          title="Estimated: no exchange rate on or before some transaction's date, so the earliest rate on file was used.">approx</span>
+                </div>
                 <div class="text-lg font-semibold text-slate-900" x-text="formatUsd(report.totals.total_spending_usd)"></div>
                 <div class="text-[10px] text-slate-400 font-mono"
                      x-text="'F ' + formatUsd(report.totals.fixed_spending_usd) + ' · V ' + formatUsd(report.totals.variable_spending_usd)"></div>
@@ -106,6 +113,12 @@
                     <span class="grow">
                         <span class="text-sm font-medium text-slate-800" x-text="sourceLabel(b.source)"></span>
                         <span class="block text-xs text-slate-500" x-text="formatNative(b.amount_native, b.currency)"></span>
+                        <!-- Twin of the desktop marker: set when a receipt in
+                             this month had no exchange rate on or before its
+                             date, so the earliest rate on file was used. -->
+                        <span x-show="b.approximate"
+                              class="block text-[10px] uppercase tracking-wide text-amber-700"
+                              title="Estimated: no exchange rate on or before some receipt's date, so the earliest rate on file was used. Backfill the period's rates to tighten it.">approx</span>
                         <span x-show="salaryTax(b.source) > 0" class="block text-[11px] text-rose-700"
                               x-text="`taxes ${formatUsd(salaryTax(b.source))} (${salaryTaxPct(b.source)}%)`"></span>
                     </span>

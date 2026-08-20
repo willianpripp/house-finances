@@ -443,7 +443,9 @@ def commit_account(
             for i in range(len(pr.transactions))
         ])
         return {"kind": "card", "transactions_created": result.transactions_created,
-                "duplicates_skipped": result.duplicates_skipped}
+                "duplicates_skipped": result.duplicates_skipped,
+                "pending_reconciled": result.pending_reconciled,
+                "pending_superseded": result.pending_superseded}
     else:
         pr = to_checking_parseresult(txns, pm, since=since, until=until, ending_balance=Decimal("0"), rules=load_match_rules(db))
         convs = {
@@ -483,4 +485,6 @@ def commit_account(
             pr.activities[i].plaid_transaction_id
             for i in range(len(pr.activities))
         ])
-        return {"kind": "checking", "result": "ok"}
+        return {"kind": "checking", "result": "ok",
+                "pending_reconciled": result.pending_reconciled,
+                "pending_superseded": result.pending_superseded}

@@ -68,8 +68,9 @@ from app.models import (
     User,
     WithholdingMerchant,
 )
+from app.services import income as income_service
 from app.services.auth import hash_password
-from app.services.exchange_rates import DEFAULT_IOF, DEFAULT_SPREAD, compute_effective
+from app.services.exchange_rates import compute_effective, default_iof, default_spread
 
 SEED = 42
 DEMO_PASSWORD = "demo1234"
@@ -566,13 +567,15 @@ class DemoSeeder:
                 jitter = self.rng.randint(-FX_COMMERCIAL_JITTER, FX_COMMERCIAL_JITTER)
                 commercial = FX_COMMERCIAL_CENTRE + Decimal(jitter) / Decimal(100)
             commercial = commercial.quantize(Decimal("0.0001"))
+            spread = default_spread()
+            iof = default_iof()
             self.session.add(
                 ExchangeRate(
                     rate_date=date(year, month, 1),
                     commercial=commercial,
-                    spread=DEFAULT_SPREAD,
-                    iof=DEFAULT_IOF,
-                    effective=compute_effective(commercial, DEFAULT_SPREAD, DEFAULT_IOF),
+                    spread=spread,
+                    iof=iof,
+                    effective=compute_effective(commercial, spread, iof),
                 )
             )
         self.session.flush()
@@ -800,7 +803,57 @@ class DemoSeeder:
                 amount=self._money("90.00", "320.00"),
             )
 
+    def _income_receipt(
+        self,
+        *,
+        source: IncomeSource,
+        year: int,
+        month: int,
+        amount: Decimal,
+        currency: Currency,
+        pm_name: str,
+        description: str,
+        lag: bool,
+    ) -> None:
+        """One receipt for the income month (year, month).
+
+        `lag=True` means the money arrives at the end of the previous month and
+        funds this one, which is the lag-by-1-month rule salaries and rents
+        follow; `lag=False` books it inside the month itself, like an extra.
+        """
+        if lag:
+            prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+            arrived = self._day(prev_year, prev_month, 28)
+        else:
+            arrived = self._day(year, month, 12)
+        income_service.record_receipt(
+            self.session,
+            income_service.ReceiptDraft(
+                source=source,
+                year=year,
+                month=month,
+                receipt_date=arrived,
+                amount=amount,
+                currency=currency,
+                provenance=income_service.PROVENANCE_STATEMENT,
+                payment_method_id=self.pms[pm_name].id,
+                description=description,
+            ),
+        )
+        income_service.recompute_month(self.session, year, month, source)
+        self._count("income_receipts")
+
     def seed_income(self) -> None:
+        """Seeds receipts, not totals.
+
+        `income_entries` is derived (see `app/services/income.py`), so writing
+        totals here would produce a demo whose `income_receipts` table is empty
+        and whose first import silently rewrites the numbers. Going through the
+        same service the importers use keeps the demo honest about how the app
+        works, even though the `/income` drill-down that used to show this
+        table was removed 2026-08-20 (the monthly report already covers what a
+        human needs to see; the receipts remain queryable in the database).
+        """
         for year, month in self.months:
             partner_gross = (
                 PARTNER_GROSS_AFTER_RAISE if (year, month) >= RAISE_FROM else PARTNER_GROSS
@@ -808,43 +861,60 @@ class DemoSeeder:
             primary_gross = (
                 PRIMARY_GROSS_BRL_AFTER_RAISE if (year, month) >= RAISE_FROM else PRIMARY_GROSS_BRL
             )
-            self.session.add_all(
-                [
-                    IncomeEntry(
-                        year=year,
-                        month=month,
-                        source=IncomeSource.PARTNER_SALARY,
-                        amount=partner_gross,
-                        currency=Currency.USD,
-                    ),
-                    IncomeEntry(
-                        year=year,
-                        month=month,
-                        source=IncomeSource.PRIMARY_SALARY,
-                        amount=primary_gross,
-                        currency=Currency.BRL,
-                    ),
-                ]
-            )
-        extras = [
-            IncomeEntry(
-                year=2026,
-                month=6,
-                source=IncomeSource.RENTS_BRAZIL,
-                amount=Decimal("3150.00"),
-                currency=Currency.BRL,
-            ),
-            IncomeEntry(
-                year=2026,
-                month=4,
-                source=IncomeSource.EXTRA_USD,
-                amount=Decimal("465.00"),
+            self._income_receipt(
+                source=IncomeSource.PARTNER_SALARY,
+                year=year,
+                month=month,
+                amount=partner_gross,
                 currency=Currency.USD,
-            ),
-        ]
-        self.session.add_all(extras)
+                pm_name=CHECKING_USD,
+                description="Payroll deposit",
+                lag=True,
+            )
+            self._income_receipt(
+                source=IncomeSource.PRIMARY_SALARY,
+                year=year,
+                month=month,
+                amount=primary_gross,
+                currency=Currency.BRL,
+                pm_name=CHECKING_BRL,
+                description="Invoice payout",
+                lag=True,
+            )
+        # Two rents in one month: the per-receipt ledger sums them, which the
+        # pre-ledger monthly-total shape could not do.
+        self._income_receipt(
+            source=IncomeSource.RENTS_BRAZIL,
+            year=2026,
+            month=6,
+            amount=Decimal("1900.00"),
+            currency=Currency.BRL,
+            pm_name=CHECKING_BRL,
+            description="Rent received, unit A",
+            lag=True,
+        )
+        self._income_receipt(
+            source=IncomeSource.RENTS_BRAZIL,
+            year=2026,
+            month=6,
+            amount=Decimal("1250.00"),
+            currency=Currency.BRL,
+            pm_name=CHECKING_BRL,
+            description="Rent received, unit B",
+            lag=True,
+        )
+        self._income_receipt(
+            source=IncomeSource.EXTRA_USD,
+            year=2026,
+            month=4,
+            amount=Decimal("465.00"),
+            currency=Currency.USD,
+            pm_name=CHECKING_USD,
+            description="Tax refund",
+            lag=False,
+        )
         self.session.flush()
-        self._count("income_entries", len(self.months) * 2 + len(extras))
+        self._count("income_entries", len(self.months) * 2 + 2)
 
     def seed_balances(self) -> None:
         savings_balance = Decimal("26750.00")

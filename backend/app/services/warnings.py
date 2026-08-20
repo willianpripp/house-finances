@@ -23,6 +23,13 @@ Two readouts feed `/warnings` and the Home dashboard:
 
 The service is pure-query: no writes, no caching. Cheap enough to
 recompute on every Home / Warnings page load.
+
+Since 2026-08-19 these feeds have a second consumer besides the page:
+`services/calendar_push.py` turns the dated ones into family-calendar
+reminders, because a pull page only warns whoever opens it. That is why
+`ExpiringItem` carries `end_date` as a date and not only inside the display
+string, and why nothing here was deleted when `/warnings` demoted the
+overdraft and statement sections.
 """
 from __future__ import annotations
 
@@ -163,6 +170,11 @@ class ExpiringItem:
     recurrence_kind: str           # INSTALLMENT | CONTRACT
     severity: str                  # "high" (this month) | "medium" (within horizon)
     detail: str                    # "Last installment 6/6 due 2026-06-12" / "Contract ends 2026-07-01"
+    # The date the thing actually ends: `contract_end_date` for CONTRACT, the
+    # projected final-installment date for INSTALLMENT. `detail` embeds it for
+    # display, but the calendar push (services/calendar_push.py) needs the date
+    # itself and must not parse a display string to get it.
+    end_date: date
 
 
 # ---------- helpers ----------
@@ -552,6 +564,7 @@ def expiring_contracts(
             recurrence_kind=t.recurrence_kind.value,
             severity=severity,
             detail=f"Contract ends {t.contract_end_date.isoformat()} ({days_left}d)",
+            end_date=t.contract_end_date,
         ))
 
     # INSTALLMENT series on their last 1 installment in the horizon. We look
@@ -603,6 +616,7 @@ def expiring_contracts(
             recurrence_kind=t.recurrence_kind.value,
             severity=severity,
             detail=f"Last installment ({t.installment_total}/{t.installment_total}) ~{final_date.isoformat()}",
+            end_date=final_date,
         ))
 
     severity_rank = {"high": 0, "medium": 1, "low": 2}

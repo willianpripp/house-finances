@@ -85,7 +85,16 @@
                 <div class="text-xs mt-1" x-html="diffBadge(report.totals.net_income_usd, report.prior?.net_income_usd, true)"></div>
             </div>
             <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
-                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">Spending</div>
+                <div class="text-xs uppercase font-medium text-slate-500 tracking-wide">
+                    Spending
+                    <!-- Twin of the income marker below: set when a
+                         transaction this month had no exchange rate on or
+                         before its date, so the earliest rate on file priced
+                         it. -->
+                    <span x-show="report.totals.spending_rate_approximate"
+                          class="ml-1 text-[10px] normal-case tracking-wide text-amber-700"
+                          title="Estimated: no exchange rate on or before some transaction's date, so the earliest rate on file was used. Backfill the period's rates to tighten it.">approx</span>
+                </div>
                 <div class="text-xl font-semibold text-slate-900 mt-1" x-text="formatUsd(report.totals.total_spending_usd)"></div>
                 <div class="text-[10px] text-slate-400 font-mono" x-text="formatBrl(report.totals.total_spending_usd)"></div>
                 <div class="text-xs text-slate-500 mt-1">
@@ -151,6 +160,13 @@
                                 <div class="font-medium text-slate-800" x-text="sourceLabel(b.source)"></div>
                                 <div class="text-xs text-slate-500">
                                     <span x-text="formatNative(b.amount_native, b.currency)"></span>
+                                    <!-- Set when a receipt in this month had no
+                                         exchange rate on or before its date, so
+                                         the earliest rate on file was used. The
+                                         figure is an estimate and says so. -->
+                                    <span x-show="b.approximate"
+                                          class="ml-1 text-[10px] uppercase tracking-wide text-amber-700"
+                                          title="Estimated: no exchange rate on or before some receipt's date, so the earliest rate on file was used. Backfill the period's rates to tighten it.">approx</span>
                                 </div>
                                 <div x-show="salaryTax(b.source) > 0"
                                      class="text-[11px] text-rose-700 mt-0.5"

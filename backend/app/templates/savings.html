@@ -85,6 +85,9 @@
                         <option :value="name"></option>
                     </template>
                 </datalist>
+                <p x-show="accountProvider(newEntry.account_name)"
+                   class="mt-1 text-xs text-amber-700"
+                   x-text="`${accountProvider(newEntry.account_name)} owns this balance. Refresh it in Connections.`"></p>
             </div>
             <div>
                 <label class="block text-xs font-medium text-slate-600 mb-1">Balance</label>
@@ -106,8 +109,8 @@
             </div>
             <div>
                 <button @click="createEntry()"
-                        :disabled="creating || !newEntry.account_name || newEntry.balance === null || newEntry.balance === ''"
-                        :class="(newEntry.account_name && newEntry.balance !== null && newEntry.balance !== '' && !creating) ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
+                        :disabled="creating || !canCreate()"
+                        :class="(canCreate() && !creating) ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-300 cursor-not-allowed'"
                         class="w-full px-4 py-2 rounded-md text-white text-sm font-medium">
                     <span x-show="!creating">Add</span>
                     <span x-show="creating">Saving…</span>
@@ -117,20 +120,26 @@
         <p x-show="createError" class="mt-2 text-sm text-rose-600" x-text="createError"></p>
     </div>
 
-    <!-- HISTORY FILTERS -->
+    <!-- HISTORY: collapsed by default, same disclosure idiom as the warnings
+         page's secondary section. The per-date listing is the part that
+         collapses; the filters stay reachable from the toggle header. -->
     <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-4">
-        <div class="flex items-center justify-between mb-3">
+        <button @click="historyOpen = !historyOpen"
+                class="w-full flex items-center justify-between mb-3 text-left">
             <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">History</h3>
-            <div class="text-xs text-slate-500">
-                <span x-text="(history?.snapshots || []).length"></span> snapshot(s)
-                <template x-for="(s, c) in history?.sum_by_currency || {}" :key="c">
-                    <span class="ml-2">·
-                        <span class="font-medium" x-text="c"></span>
-                        <span x-text="formatAmount(s)"></span>
-                    </span>
-                </template>
-            </div>
-        </div>
+            <span class="flex items-center gap-3 text-xs text-slate-500 shrink-0">
+                <span>
+                    <span x-text="(history?.snapshots || []).length"></span> snapshot(s)
+                    <template x-for="(s, c) in history?.sum_by_currency || {}" :key="c">
+                        <span class="ml-2">·
+                            <span class="font-medium" x-text="c"></span>
+                            <span x-text="formatAmount(s)"></span>
+                        </span>
+                    </template>
+                </span>
+                <span class="text-blue-600" x-text="historyOpen ? 'hide detail' : 'show detail'"></span>
+            </span>
+        </button>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div class="md:col-span-2">
                 <label class="block text-xs font-medium text-slate-600 mb-1">Account</label>
@@ -161,7 +170,7 @@
     </div>
 
     <!-- HISTORY GROUPED BY DATE -->
-    <div class="space-y-3">
+    <div class="space-y-3" x-show="historyOpen" x-cloak>
         <template x-for="group in groupedHistory()" :key="group.date">
             <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
                 <div class="bg-slate-100 px-4 py-2 flex items-center justify-between">
@@ -189,7 +198,14 @@
                                             <div class="px-3 py-2 text-xs text-slate-400" x-text="s.currency"></div>
                                             <div class="px-3 py-2 text-xs text-slate-500" x-text="formatDate(s.recorded_at)"></div>
                                             <div class="px-3 py-2 text-right space-x-2">
-                                                <button @click="startEdit(s)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                                <!-- One writer per fact: editing a provider-fed account's
+                                                     balance always 409s, so offer only the delete the
+                                                     guard still allows. -->
+                                                <span x-show="accountProvider(s.account_name)"
+                                                      class="text-[11px] text-slate-400"
+                                                      x-text="`${accountProvider(s.account_name)} owns this`"></span>
+                                                <button x-show="!accountProvider(s.account_name)"
+                                                        @click="startEdit(s)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
                                                 <button @click="askDelete(s)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
                                             </div>
                                         </div>
@@ -269,10 +285,14 @@ function savingsPage() {
     const today = new Date().toISOString().slice(0, 10);
     return {
         accountNames: [],
+        paymentMethods: [],
         current: null,
         history: null,
         filters: {account_name: '', from_date: '', to_date: ''},
         showDormant: false,  // ENH-4
+        // Collapsed by default: the per-date listing is detail behind the
+        // totals above it, same call as the warnings page's secondary section.
+        historyOpen: false,
         loading: false,
         creating: false,
         saving: false,
@@ -290,7 +310,28 @@ function savingsPage() {
         },
 
         async init() {
-            await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory(), this.loadRate()]);
+            await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory(),
+                               this.loadRate(), this.loadPaymentMethods()]);
+        },
+
+        // One writer per fact. savings_snapshots.account_name is free text
+        // keyed to payment_methods.name, so linkage is looked up by exact name
+        // (the report buckets per that string, casing included) and the API
+        // answers with the provider that owns the account's balance.
+        async loadPaymentMethods() {
+            try {
+                const res = await fetch('/api/payment-methods?active_only=false');
+                this.paymentMethods = await res.json();
+            } catch (e) { /* the 409 still teaches the rule if this fails */ }
+        },
+        accountProvider(name) {
+            if (!name) return null;
+            return this.paymentMethods.find(pm => pm.name === name.trim())?.provider || null;
+        },
+        canCreate() {
+            return !!this.newEntry.account_name
+                && this.newEntry.balance !== null && this.newEntry.balance !== ''
+                && !this.accountProvider(this.newEntry.account_name);
         },
 
         async loadRate() {

@@ -58,80 +58,19 @@
                 </div>
             </div>
         </template>
-        <div x-show="!loading && (current?.snapshots || []).length === 0" class="text-center text-slate-500 text-sm py-4">
+        <div x-show="current !== null && (current?.snapshots || []).length === 0" class="text-center text-slate-500 text-sm py-4">
             No accounts yet — tap + to add a snapshot.
         </div>
+        <p x-show="errorMessage" class="text-xs text-rose-600 mt-2" x-text="errorMessage"></p>
     </div>
 
-    <!-- HISTORY FILTERS -->
-    <div class="pcard">
-        <div class="flex items-center justify-between mb-2">
-            <div class="text-xs uppercase tracking-wide font-semibold text-slate-500">History</div>
-            <div class="text-xs text-slate-500">
-                <span x-text="(history?.snapshots || []).length"></span> snapshot(s)
-                <template x-for="(s, c) in history?.sum_by_currency || {}" :key="c">
-                    <span class="ml-1">· <span class="font-medium" x-text="c"></span> <span x-text="formatAmount(s)"></span></span>
-                </template>
-            </div>
-        </div>
-        <div class="grid grid-cols-2 gap-2 mb-2">
-            <select x-model="filters.account_name" @change="reloadHistory()"
-                    class="col-span-2 w-full border border-slate-300 rounded-md px-2 py-2 text-sm bg-white">
-                <option value="">All accounts</option>
-                <template x-for="name in accountNames" :key="name">
-                    <option :value="name" x-text="name"></option>
-                </template>
-            </select>
-            <input type="date" x-model="filters.from_date" @change="reloadHistory()"
-                   class="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
-            <input type="date" x-model="filters.to_date" @change="reloadHistory()"
-                   class="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
-        </div>
-        <div class="flex items-center gap-3 text-xs">
-            <button @click="resetFilters()" class="text-slate-600 underline">Reset</button>
-            <span x-show="loading" class="text-slate-500">Loading…</span>
-            <span x-show="errorMessage" class="text-rose-600" x-text="errorMessage"></span>
-        </div>
-    </div>
-
-    <!-- HISTORY GROUPED BY DATE -->
-    <template x-for="group in groupedHistory()" :key="group.date">
-        <div class="pcard">
-            <div class="flex items-center justify-between mb-1">
-                <div class="text-sm font-semibold text-slate-800" x-text="group.date"></div>
-                <div class="text-xs text-slate-600">
-                    <template x-for="(s, c) in group.sums" :key="c">
-                        <span class="ml-2"><span class="font-medium" x-text="c"></span> <span x-text="formatAmount(s)"></span></span>
-                    </template>
-                </div>
-            </div>
-            <template x-for="s in group.entries" :key="s.id">
-                <div>
-                    <div class="prow" @click="expanded = expanded === s.id ? null : s.id">
-                        <span class="grow">
-                            <span class="text-sm font-medium text-slate-800" x-text="s.account_name"></span>
-                            <span class="block text-xs text-slate-500" x-text="s.currency + ' · ' + formatDate(s.recorded_at)"></span>
-                        </span>
-                        <span class="text-sm font-semibold text-slate-900 whitespace-nowrap" x-text="formatAmount(s.balance)"></span>
-                    </div>
-                    <div x-show="expanded === s.id" x-cloak class="flex gap-2 py-2 pl-2">
-                        <button @click="openEdit(s)" class="text-xs border border-blue-300 text-blue-700 rounded px-3 py-1.5">Edit</button>
-                        <button @click="del(s)" class="text-xs border border-rose-300 text-rose-700 rounded px-3 py-1.5">Delete</button>
-                    </div>
-                </div>
-            </template>
-        </div>
-    </template>
-    <div x-show="!loading && (history?.snapshots || []).length === 0" class="pcard text-center text-slate-500 text-sm py-6">
-        No snapshots match these filters.
-    </div>
-
-    <!-- ADD / EDIT SNAPSHOT bottom sheet -->
+    <!-- ADD SNAPSHOT bottom sheet. No history here (owner decision, 2026-08-19):
+         the desktop /savings still has the full per-date listing, collapsed. -->
     <div x-show="sheetOpen" x-cloak>
         <div class="psheet-backdrop" @click="sheetOpen = false"></div>
         <div class="psheet space-y-3">
             <div class="flex items-center justify-between">
-                <div class="text-base font-semibold text-slate-900" x-text="editingId ? 'Edit snapshot' : 'Add snapshot'"></div>
+                <div class="text-base font-semibold text-slate-900">Add snapshot</div>
                 <button @click="sheetOpen = false" class="text-slate-500 text-xl leading-none px-2">✕</button>
             </div>
 
@@ -144,6 +83,8 @@
                         <option :value="name"></option>
                     </template>
                 </datalist>
+                <p x-show="accountProvider(form.account_name)" class="mt-1 text-xs text-amber-700"
+                   x-text="`${accountProvider(form.account_name)} owns this balance. Refresh it in Connections.`"></p>
             </div>
 
             <div class="flex gap-2">
@@ -169,7 +110,7 @@
             <button @click="submitForm()" :disabled="saving || !canSubmit()"
                     :class="(canSubmit() && !saving) ? 'bg-emerald-600' : 'bg-slate-300'"
                     class="w-full text-white rounded-lg px-4 py-3 text-sm font-medium disabled:opacity-60">
-                <span x-show="!saving" x-text="editingId ? 'Save' : 'Add'"></span>
+                <span x-show="!saving">Add</span>
                 <span x-show="saving">Saving…</span>
             </button>
             <p x-show="formError" class="text-sm text-rose-600" x-text="formError"></p>
@@ -189,16 +130,11 @@ function phoneSavings() {
     const today = new Date().toISOString().slice(0, 10);
     return {
         accountNames: [],
+        paymentMethods: [],
         current: null,
-        history: null,
-        filters: {account_name: '', from_date: '', to_date: ''},
         showDormant: false,
-        loading: false,
         saving: false,
-        deleting: false,
-        expanded: null,
         sheetOpen: false,
-        editingId: null,
         errorMessage: '',
         formError: '',
         effectiveRate: null,
@@ -212,7 +148,20 @@ function phoneSavings() {
         async init() {
             window.addEventListener('open-new-snapshot', () => { this.openNew(); });
             if (new URLSearchParams(location.search).get('new')) this.openNew();
-            await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory(), this.loadRate()]);
+            await Promise.all([this.reloadCurrent(), this.reloadAccounts(),
+                               this.loadRate(), this.loadPaymentMethods()]);
+        },
+
+        // One writer per fact (verbatim from desktop savingsPage()).
+        async loadPaymentMethods() {
+            try {
+                const res = await fetch('/api/payment-methods?active_only=false');
+                this.paymentMethods = await res.json();
+            } catch (e) { /* the 409 still teaches the rule if this fails */ }
+        },
+        accountProvider(name) {
+            if (!name) return null;
+            return this.paymentMethods.find(pm => pm.name === name.trim())?.provider || null;
         },
 
         async loadRate() {
@@ -294,70 +243,15 @@ function phoneSavings() {
             } catch (e) { /* ignore */ }
         },
 
-        buildHistoryQuery() {
-            const params = new URLSearchParams();
-            if (this.filters.account_name) params.set('account_name', this.filters.account_name);
-            if (this.filters.from_date) params.set('from', this.filters.from_date + 'T00:00:00');
-            if (this.filters.to_date) params.set('to', this.filters.to_date + 'T23:59:59');
-            return params.toString();
-        },
-
-        async reloadHistory() {
-            this.loading = true;
-            this.errorMessage = '';
-            try {
-                const res = await fetch('/api/savings/snapshots?' + this.buildHistoryQuery());
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                this.history = await res.json();
-            } catch (e) {
-                this.errorMessage = e.message;
-            } finally {
-                this.loading = false;
-            }
-        },
-
-        groupedHistory() {
-            if (!this.history?.snapshots) return [];
-            const groups = new Map();
-            for (const s of this.history.snapshots) {
-                const date = (s.recorded_at || '').slice(0, 10);
-                if (!groups.has(date)) {
-                    groups.set(date, {date, entries: [], sums: {}});
-                }
-                const g = groups.get(date);
-                g.entries.push(s);
-                g.sums[s.currency] = (parseFloat(g.sums[s.currency] || 0) + parseFloat(s.balance)).toFixed(2);
-            }
-            return Array.from(groups.values());
-        },
-
-        resetFilters() {
-            this.filters = {account_name: '', from_date: '', to_date: ''};
-            this.reloadHistory();
-        },
-
         openNew() {
-            this.editingId = null;
             this.form = {account_name: '', balance: null, currency: 'USD', recorded_date: today};
             this.formError = '';
             this.sheetOpen = true;
         },
 
-        openEdit(s) {
-            this.editingId = s.id;
-            this.form = {
-                account_name: s.account_name,
-                balance: parseFloat(s.balance),
-                currency: s.currency,
-                recorded_date: (s.recorded_at || '').slice(0, 10),
-            };
-            this.formError = '';
-            this.expanded = null;
-            this.sheetOpen = true;
-        },
-
         canSubmit() {
-            return this.form.account_name && this.form.balance !== null && this.form.balance !== '';
+            return this.form.account_name && this.form.balance !== null && this.form.balance !== ''
+                && !this.accountProvider(this.form.account_name);
         },
 
         async submitForm() {
@@ -372,50 +266,21 @@ function phoneSavings() {
                 if (this.form.recorded_date) {
                     body.recorded_at = this.form.recorded_date + 'T12:00:00';
                 }
-                let res;
-                if (this.editingId) {
-                    res = await fetch(`/api/savings/snapshots/${this.editingId}`, {
-                        method: 'PATCH',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(body),
-                    });
-                } else {
-                    res = await fetch('/api/savings/snapshots', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(body),
-                    });
-                }
+                const res = await fetch('/api/savings/snapshots', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     throw new Error(err.detail || `HTTP ${res.status}`);
                 }
                 this.sheetOpen = false;
-                this.editingId = null;
-                await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory()]);
+                await Promise.all([this.reloadCurrent(), this.reloadAccounts()]);
             } catch (e) {
                 this.formError = e.message;
             } finally {
                 this.saving = false;
-            }
-        },
-
-        async del(s) {
-            if (!confirm(`Delete ${s.account_name} · ${this.formatAmount(s.balance)} ${s.currency} · ${this.formatDate(s.recorded_at)}? This cannot be undone.`)) return;
-            this.deleting = true;
-            this.errorMessage = '';
-            try {
-                const res = await fetch(`/api/savings/snapshots/${s.id}`, {method: 'DELETE'});
-                if (!res.ok && res.status !== 204) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(err.detail || `HTTP ${res.status}`);
-                }
-                this.expanded = null;
-                await Promise.all([this.reloadCurrent(), this.reloadAccounts(), this.reloadHistory()]);
-            } catch (e) {
-                this.errorMessage = e.message;
-            } finally {
-                this.deleting = false;
             }
         },
 

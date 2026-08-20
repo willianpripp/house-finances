@@ -1,23 +1,32 @@
-"""Exchange rate endpoints."""
+"""Exchange rate endpoints. Read-only: rates land in the table only through
+the PTAX auto-fetch (scripts/refresh_exchange_rate.py, daily run and
+--backfill mode). There is no create or edit HTTP surface (2026-08-20:
+automation replaces manual entry, it does not sit alongside it) — the
+service-layer create_rate() still exists for those scripts to call, see
+app/services/exchange_rates.py.
+
+The dedicated /exchange-rates page is gone too (2026-08-20: it was a
+read-only listing of data the monthly report already surfaces; one path,
+no second page for the same numbers). The list GET below stays: it is a
+real consumer of /assets, /savings and /income, all of which fetch it
+directly for the latest/available rate(s). GET /defaults is gone with the
+page: it had no other caller.
+
+DELETE stays: it is not a way to type in a rate, it is the escape hatch for
+a bad auto-fetched row, letting the next refresh/backfill run re-fill that
+date under the same never-overwrite rule.
+"""
 from __future__ import annotations
 
 from datetime import date as date_type
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.services.exchange_rates import (
-    DEFAULT_IOF,
-    DEFAULT_SPREAD,
-    ExchangeRateRow,
-    create_rate,
-    delete_rate,
-    list_rates,
-    update_rate,
-)
+from app.services.exchange_rates import ExchangeRateRow, delete_rate, list_rates
 
 router = APIRouter(prefix="/api/exchange-rates", tags=["exchange_rates"])
 
@@ -29,73 +38,16 @@ class ExchangeRateOut(BaseModel):
     spread: Decimal
     iof: Decimal
     effective: Decimal
+    source: str
 
     @classmethod
     def from_row(cls, row: ExchangeRateRow) -> "ExchangeRateOut":
         return cls(**row.__dict__)
 
 
-class ExchangeRateIn(BaseModel):
-    rate_date: date_type
-    commercial: Decimal = Field(gt=0)
-    spread: Decimal | None = None
-    iof: Decimal | None = None
-
-
-class ExchangeRatePatchIn(BaseModel):
-    rate_date: date_type | None = None
-    commercial: Decimal | None = Field(default=None, gt=0)
-    spread: Decimal | None = None
-    iof: Decimal | None = None
-
-
-class ExchangeRateDefaults(BaseModel):
-    spread: Decimal
-    iof: Decimal
-
-
-@router.get("/defaults", response_model=ExchangeRateDefaults)
-def defaults_endpoint() -> ExchangeRateDefaults:
-    return ExchangeRateDefaults(spread=DEFAULT_SPREAD, iof=DEFAULT_IOF)
-
-
 @router.get("", response_model=list[ExchangeRateOut])
 def list_endpoint(db: Session = Depends(get_db)) -> list[ExchangeRateOut]:
     return [ExchangeRateOut.from_row(r) for r in list_rates(db)]
-
-
-@router.post("", response_model=ExchangeRateOut, status_code=status.HTTP_201_CREATED)
-def create_endpoint(payload: ExchangeRateIn, db: Session = Depends(get_db)) -> ExchangeRateOut:
-    try:
-        row = create_rate(
-            db,
-            rate_date=payload.rate_date,
-            commercial=payload.commercial,
-            spread=payload.spread,
-            iof=payload.iof,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return ExchangeRateOut.from_row(row)
-
-
-@router.patch("/{rate_id}", response_model=ExchangeRateOut)
-def patch_endpoint(
-    rate_id: int,
-    patch: ExchangeRatePatchIn,
-    db: Session = Depends(get_db),
-) -> ExchangeRateOut:
-    try:
-        row = update_rate(
-            db,
-            rate_id,
-            **patch.model_dump(exclude_unset=True),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return ExchangeRateOut.from_row(row)
 
 
 @router.delete("/{rate_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)

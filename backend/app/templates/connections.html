@@ -434,10 +434,16 @@
                       <td class="px-3 py-2">
                         <div class="flex flex-col gap-1">
                           <div>
-                            <span x-show="t.is_pending" class="inline-block px-2 py-0.5 text-xs bg-orange-100 text-orange-800 rounded" title="Pending in Plaid — amount may change when it posts; reconciled in place, no duplicate">PENDING</span>
+                            <span x-show="t.is_pending && !t.superseded_by_posted" class="inline-block px-2 py-0.5 text-xs bg-orange-100 text-orange-800 rounded" title="Pending in Plaid — amount may change when it posts; reconciled in place, no duplicate">PENDING</span>
+                            <span x-show="t.supersedes_transaction_id" class="inline-block px-2 py-0.5 text-xs bg-sky-100 text-sky-800 rounded"
+                                  :title="`Posted version of a pending charge: updates ledger row #${t.supersedes_transaction_id} in place (was ${t.supersedes_prior_amount}), keeping its category and any receivable link`"
+                                  x-text="`REPLACES PENDING #${t.supersedes_transaction_id}`"></span>
+                            <span x-show="t.amount_changed" class="inline-block px-2 py-0.5 text-xs bg-sky-50 text-sky-700 border border-sky-200 rounded"
+                                  :title="`Amount changed from ${t.supersedes_prior_amount} when it posted (tip, fuel hold)`">AMOUNT CHANGED</span>
+                            <span x-show="t.superseded_by_posted" class="inline-block px-2 py-0.5 text-xs bg-slate-200 text-slate-700 rounded" title="Pending version of a charge whose posted version is in this same list — committing both is what duplicates it, so this row is dropped">SUPERSEDED</span>
                             <span x-show="t.is_duplicate" class="inline-block px-2 py-0.5 text-xs bg-amber-100 text-amber-800 rounded">DUP</span>
-                            <span x-show="!t.is_duplicate && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]" class="inline-block px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded">NEW MERCHANT</span>
-                            <span x-show="!t.is_duplicate && !(t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx])" class="inline-block px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded">NEW</span>
+                            <span x-show="!t.is_duplicate && !t.supersedes_transaction_id && !t.superseded_by_posted && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]" class="inline-block px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded">NEW MERCHANT</span>
+                            <span x-show="!t.is_duplicate && !t.supersedes_transaction_id && !t.superseded_by_posted && !(t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx])" class="inline-block px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded">NEW</span>
                             <span x-show="rowEdited(idx)" class="inline-block px-2 py-0.5 text-xs bg-amber-100 text-amber-900 rounded ml-1">EDITED</span>
                           </div>
                           <div class="text-xs">
@@ -511,7 +517,12 @@
                       <td class="px-3 py-2">
                         <span class="inline-block px-1.5 py-0.5 text-xs rounded font-mono"
                               :class="checkingClassBadge(a.classification)" x-text="a.classification"></span>
-                        <span x-show="a.pending" class="inline-block px-1.5 py-0.5 text-xs bg-orange-100 text-orange-800 rounded ml-1" title="Pending in Plaid — reconciled in place when it posts, no duplicate">PENDING</span>
+                        <span x-show="a.pending && !a.superseded_by_posted" class="inline-block px-1.5 py-0.5 text-xs bg-orange-100 text-orange-800 rounded ml-1" title="Pending in Plaid — reconciled in place when it posts, no duplicate">PENDING</span>
+                        <span x-show="a.supersedes_transaction_id" class="inline-block px-1.5 py-0.5 text-xs bg-sky-100 text-sky-800 rounded ml-1"
+                              :title="`Updates ledger row #${a.supersedes_transaction_id} in place (was ${a.supersedes_prior_amount})`"
+                              x-text="`REPLACES #${a.supersedes_transaction_id}`"></span>
+                        <span x-show="a.amount_changed" class="inline-block px-1.5 py-0.5 text-xs bg-sky-50 text-sky-700 border border-sky-200 rounded ml-1">AMOUNT CHANGED</span>
+                        <span x-show="a.superseded_by_posted" class="inline-block px-1.5 py-0.5 text-xs bg-slate-200 text-slate-700 rounded ml-1" title="Pending version of a charge whose posted version is in this same list — this row is dropped">SUPERSEDED</span>
                       </td>
                       <td class="px-3 py-2">
                         <div class="flex flex-col gap-1">
@@ -1032,9 +1043,12 @@ function connectionsPage() {
           throw new Error(err.detail || `HTTP ${r.status}`);
         }
         const d = await r.json();
-        this.reviewResult = d.kind === 'card'
+        const supersedes = (d.pending_reconciled || 0) + (d.pending_superseded || 0)
+          ? ` ${d.pending_reconciled || 0} pending rows updated in place by their posted version, ${d.pending_superseded || 0} dropped as superseded.`
+          : '';
+        this.reviewResult = (d.kind === 'card'
           ? `Committed: ${d.transactions_created} transactions created, ${d.duplicates_skipped} duplicates skipped.`
-          : `Checking import committed.`;
+          : `Checking import committed.`) + supersedes;
         await Promise.all([this.loadItems(), this.loadPMs()]);
       } catch (e) {
         this.reviewError = e.message;

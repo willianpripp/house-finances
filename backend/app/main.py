@@ -27,12 +27,13 @@ from app.routers import debts as debts_router
 from app.routers import exchange_rates as exchange_rates_router
 from app.routers import home as home_router
 from app.routers import imports as imports_router
-from app.routers import income as income_router
+from app.routers import income as income_router  # DELETE hatch only, no page
 from app.routers import merchants as merchants_router
 from app.routers import payment_methods as payment_methods_router
 from app.routers import receivables as receivables_router
 from app.routers import reports as reports_router
 from app.routers import savings as savings_router
+from app.routers import spend_goals as spend_goals_router
 from app.routers import transactions as transactions_router
 from app.routers import users as users_router
 from app.routers import warnings as warnings_router
@@ -100,8 +101,6 @@ PHONE_PAGES = {
     "transactions.html",
     "debts.html",
     "savings.html",
-    "income.html",
-    "exchange_rates.html",
     "assets.html",
     "warnings.html",
     "reports_annual.html",
@@ -158,6 +157,7 @@ app.include_router(payment_methods_router.router)
 app.include_router(receivables_router.router)
 app.include_router(reports_router.router)
 app.include_router(savings_router.router)
+app.include_router(spend_goals_router.router)
 app.include_router(transactions_router.router)
 app.include_router(users_router.router)
 app.include_router(warnings_router.router)
@@ -275,19 +275,6 @@ def transactions_page(request: Request):
     )
 
 
-@app.get("/income")
-def income_page(request: Request):
-    return render(
-        request,
-        "income.html",
-        {
-            "app_name": settings.app_name,
-            "environment": settings.environment,
-            "salary_labels": _salary_labels(),
-        },
-    )
-
-
 @app.get("/savings")
 def savings_page(request: Request):
     return render(
@@ -329,18 +316,6 @@ def assets_page(request: Request):
     return render(
         request,
         "assets.html",
-        {
-            "app_name": settings.app_name,
-            "environment": settings.environment,
-        },
-    )
-
-
-@app.get("/exchange-rates")
-def exchange_rates_page(request: Request):
-    return render(
-        request,
-        "exchange_rates.html",
         {
             "app_name": settings.app_name,
             "environment": settings.environment,

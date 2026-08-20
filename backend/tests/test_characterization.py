@@ -229,13 +229,13 @@ def test_withholding_merchants_come_from_config(db):
 
 
 def test_salary_labels_reach_both_uis_from_the_household_config(client):
-    """The income and monthly-report pages used to spell the members out in
-    their JavaScript. Both UIs now take the labels from `household_members`,
-    so renaming a member in the database moves the label on both screens."""
+    """The monthly-report page (and, until 2026-08-20, the now-removed /income
+    page) used to spell the members out in its JavaScript. Both UIs now take
+    the label from `household_members`, so renaming a member in the database
+    moves the label on both screens."""
     phone = {"user-agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) Mobi Safari"}
     for headers in ({}, phone):
-        for path in ("/income", "/reports/monthly"):
-            response = client.get(path, headers=headers)
-            assert response.status_code == 200, path
-            assert f"{PRIMARY_NAME.split()[0]} Salary" in response.text, path
-            assert f"{PARTNER_NAME.split()[0]} Salary" in response.text, path
+        response = client.get("/reports/monthly", headers=headers)
+        assert response.status_code == 200
+        assert f"{PRIMARY_NAME.split()[0]} Salary" in response.text
+        assert f"{PARTNER_NAME.split()[0]} Salary" in response.text

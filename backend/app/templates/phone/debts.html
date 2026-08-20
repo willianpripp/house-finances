@@ -69,6 +69,8 @@
                 <a href="/imports" class="text-blue-600 hover:text-blue-800">checking imports</a>.
                 Need a one-off override? Edit the latest row in the history below.
             </p>
+            <p x-show="providerCards().length" class="text-xs text-amber-700 mt-1"
+               x-text="`Not these, though: ${providerCards().join(', ')}. Their balance comes from the provider refresh, so the override is refused.`"></p>
         </div>
 
         <!-- HISTORY -->
@@ -104,7 +106,12 @@
                         <template x-if="editingCard?.id === b.id">
                             <div class="py-2 space-y-2 border-b border-slate-100">
                                 <div class="text-sm text-slate-800" x-text="b.payment_method_name"></div>
-                                <div class="flex gap-2">
+                                <!-- One writer per fact: a provider-fed card's balance comes from
+                                     the refresh, so the fields are not offered and only the delete
+                                     the guard allows remains. -->
+                                <p x-show="cardProvider(b)" class="text-xs text-amber-700"
+                                   x-text="`${cardProvider(b)} owns this balance. Refresh it in Connections.`"></p>
+                                <div class="flex gap-2" x-show="!cardProvider(b)">
                                     <input type="date" x-model="editingCard.recorded_date"
                                            class="flex-1 border border-slate-300 rounded px-2 py-1.5 text-sm">
                                     <input type="number" step="0.01" x-model.number="editingCard.balance"
@@ -114,7 +121,7 @@
                                            class="w-16 border border-slate-300 rounded px-2 py-1.5 text-sm">
                                 </div>
                                 <div class="flex gap-2">
-                                    <button @click="saveEditCard()" :disabled="savingCard"
+                                    <button x-show="!cardProvider(b)" @click="saveEditCard()" :disabled="savingCard"
                                             class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded px-3 py-2 text-sm font-medium disabled:opacity-50">
                                         <span x-show="!savingCard">Save</span>
                                         <span x-show="savingCard">Saving…</span>
@@ -338,6 +345,14 @@ function phoneDebts() {
             const res = await fetch('/api/payment-methods?active_only=false');
             const all = await res.json();
             this.cardPaymentMethods = all.filter(pm => pm.type === 'credit_card');
+        },
+
+        // One writer per fact (verbatim from desktop debtsPage()).
+        cardProvider(b) {
+            return this.cardPaymentMethods.find(pm => pm.id === b.payment_method_id)?.provider || null;
+        },
+        providerCards() {
+            return this.cardPaymentMethods.filter(pm => pm.provider).map(pm => pm.name);
         },
 
         async reloadCardsCurrent() {

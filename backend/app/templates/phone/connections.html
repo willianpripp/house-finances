@@ -273,9 +273,13 @@
                                     <div class="text-xs text-slate-500 mt-0.5"
                                          x-text="displayMerchant(idx, t) + ' · ' + displayCategory(idx, t) + ' · ' + ownerName(t.owner_user_id)"></div>
                                     <div class="mt-1 flex flex-wrap gap-1 text-xs">
-                                        <span x-show="t.is_pending" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="t.is_pending && !t.superseded_by_posted" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="t.supersedes_transaction_id" class="px-1.5 py-0.5 bg-sky-100 text-sky-800 rounded"
+                                              x-text="`REPLACES #${t.supersedes_transaction_id}`"></span>
+                                        <span x-show="t.amount_changed" class="px-1.5 py-0.5 bg-sky-50 text-sky-700 border border-sky-200 rounded">AMOUNT CHANGED</span>
+                                        <span x-show="t.superseded_by_posted" class="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded">SUPERSEDED</span>
                                         <span x-show="t.is_duplicate" class="px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">DUP</span>
-                                        <span x-show="!t.is_duplicate && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]"
+                                        <span x-show="!t.is_duplicate && !t.supersedes_transaction_id && !t.superseded_by_posted && t.is_new_merchant && !merchantOverrides[idx] && !newMerchantNames[idx]"
                                               class="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded">NEW MERCHANT</span>
                                         <span x-show="rowEdited(idx)" class="px-1.5 py-0.5 bg-amber-100 text-amber-900 rounded">EDITED</span>
                                         <span x-show="contractConvs[idx]" class="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded"
@@ -364,7 +368,11 @@
                                     <div class="mt-1 flex flex-wrap items-center gap-1 text-xs">
                                         <span class="px-1.5 py-0.5 rounded font-mono" :class="checkingClassBadge(a.classification)"
                                               x-text="a.classification"></span>
-                                        <span x-show="a.pending" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="a.pending && !a.superseded_by_posted" class="px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded">PENDING</span>
+                                        <span x-show="a.supersedes_transaction_id" class="px-1.5 py-0.5 bg-sky-100 text-sky-800 rounded"
+                                              x-text="`REPLACES #${a.supersedes_transaction_id}`"></span>
+                                        <span x-show="a.amount_changed" class="px-1.5 py-0.5 bg-sky-50 text-sky-700 border border-sky-200 rounded">AMOUNT CHANGED</span>
+                                        <span x-show="a.superseded_by_posted" class="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded">SUPERSEDED</span>
                                         <span x-show="contractConvs[idx]" class="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded"
                                               x-text="'Split ' + contractConvs[idx]?.installments + '×'"></span>
                                         <span class="text-slate-400 ml-auto" x-text="editRow === idx ? '▴ close' : '✎ edit'"></span>
@@ -825,9 +833,12 @@ function phoneConnections() {
           throw new Error(err.detail || `HTTP ${r.status}`);
         }
         const d = await r.json();
-        this.reviewResult = d.kind === 'card'
+        const supersedes = (d.pending_reconciled || 0) + (d.pending_superseded || 0)
+          ? ` ${d.pending_reconciled || 0} pending rows updated in place by their posted version, ${d.pending_superseded || 0} dropped as superseded.`
+          : '';
+        this.reviewResult = (d.kind === 'card'
           ? `Committed: ${d.transactions_created} transactions created, ${d.duplicates_skipped} duplicates skipped.`
-          : `Checking import committed.`;
+          : `Checking import committed.`) + supersedes;
         await Promise.all([this.loadItems(), this.loadPMs()]);
       } catch (e) {
         this.reviewError = e.message;

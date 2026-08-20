@@ -2,15 +2,67 @@
 
 {% block title %}Warnings — {{ app_name }}{% endblock %}
 
+{#
+  Page shape changed 2026-08-19 (Phase D2). Contracts / installments ending and
+  the spend goals are the page: they are what actually gets acted on. The
+  overdraft forecast and the statement alerts moved into one collapsed section,
+  because they are now PUSHED into the family calendar every morning
+  (scripts/push_calendar_reminders.py) and this page is no longer where you find
+  out about them. Nothing was deleted: the services and endpoints still feed the
+  push and the Home summary, and the detail behind a reminder is one click away.
+#}
 {% block content %}
 <div x-data="warningsPage()" x-init="init()" class="space-y-6">
 
     <div class="bg-white rounded-lg shadow-sm border border-slate-200 px-6 py-4">
         <h2 class="text-2xl font-semibold text-slate-900">⚠ Warnings</h2>
         <p class="text-sm text-slate-600 mt-1">
-            Projected balance per checking account (next 14 days) and contracts / installments ending.
-            Alerts use each card's <em>paid_from</em> link to project the autopay.
+            Contracts / installments ending and spend-goal progress.
+            Statement dues, the overdraft forecast and their detail are in the
+            collapsed section at the bottom: those go to the family calendar daily.
         </p>
+    </div>
+
+    <!-- SPEND GOALS -->
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                🎯 Spend goals
+            </h3>
+            <span class="text-xs text-slate-500" x-show="spendGoals !== null"
+                  x-text="`${spendGoals?.length || 0} active`"></span>
+        </div>
+        <div x-show="spendGoals === null" class="text-sm text-slate-500 py-3">Loading…</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <template x-for="g in spendGoals || []" :key="g.id">
+                <div class="rounded-md border p-3"
+                     :class="g.completed ? 'border-emerald-300 bg-emerald-50' : (g.on_pace ? 'border-slate-200 bg-slate-50' : 'border-amber-300 bg-amber-50')">
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                            <div class="font-medium text-slate-900" x-text="g.payment_method_name"></div>
+                            <div class="text-xs text-slate-600 mt-0.5" x-text="g.reward_note"></div>
+                        </div>
+                        <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium shrink-0"
+                              :class="g.completed ? 'bg-emerald-100 text-emerald-800' : (g.on_pace ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-900')"
+                              x-text="g.completed ? '✓ done' : (g.on_pace ? 'on pace' : 'behind')"></span>
+                    </div>
+                    <div class="mt-2">
+                        <div class="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                            <div class="h-full rounded-full"
+                                 :class="g.completed ? 'bg-emerald-500' : (g.on_pace ? 'bg-blue-500' : 'bg-amber-500')"
+                                 :style="`width: ${Math.min(100, parseFloat(g.pct))}%`"></div>
+                        </div>
+                        <div class="flex items-center justify-between mt-1 text-xs text-slate-600">
+                            <span x-text="`${formatAmount(g.spent)} / ${formatAmount(g.target_amount)} ${g.currency}`"></span>
+                            <span x-text="g.days_left >= 0 ? `${g.days_left}d left` : `${-g.days_left}d overdue`"></span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <div x-show="spendGoals !== null && spendGoals.length === 0" class="col-span-full text-sm text-slate-500 py-6 text-center">
+                No active spend goals.
+            </div>
+        </div>
     </div>
 
     <!-- SETUP: CC paid_from links -->
@@ -57,158 +109,7 @@
         </table>
     </div>
 
-    <!-- STATEMENT ALERTS (close/due) -->
-    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
-        <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
-                Statement &amp; payment alerts
-            </h3>
-            <span class="text-xs text-slate-500" x-show="statementAlerts !== null"
-                  x-text="`${statementAlerts?.length || 0} alerts`"></span>
-        </div>
-        <div x-show="statementAlerts === null" class="text-sm text-slate-500 py-3">Loading…</div>
-        <ul class="divide-y divide-slate-200/60">
-            <template x-for="a in statementAlerts || []" :key="`${a.payment_method_id}-${a.kind}`">
-                <li class="py-2 flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                        <div class="flex items-center gap-2">
-                            <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium"
-                                  :class="a.severity === 'high' ? 'bg-rose-100 text-rose-800'
-                                          : a.severity === 'medium' ? 'bg-amber-100 text-amber-900'
-                                          : 'bg-emerald-100 text-emerald-800'"
-                                  x-text="a.kind === 'statement_closed' ? '📥 import'
-                                          : a.kind === 'due_soon' ? '💳 pay'
-                                          : '⏳ closing'"></span>
-                            <span class="text-sm font-medium text-slate-900" x-text="a.payment_method_name"></span>
-                            <span class="text-xs text-slate-500"
-                                  x-text="a.kind.replace('_', ' ')"></span>
-                        </div>
-                        <div class="text-xs text-slate-600 mt-0.5" x-text="a.message"></div>
-                    </div>
-                    <div class="text-right shrink-0">
-                        <div class="text-xs text-slate-500" x-text="a.target_date"></div>
-                        <a :href="a.kind === 'statement_closed' ? '/imports' : '/debts'"
-                           class="text-xs text-blue-600 hover:underline"
-                           x-text="a.kind === 'statement_closed' ? 'import ↗' : 'view ↗'"></a>
-                    </div>
-                </li>
-            </template>
-            <li x-show="statementAlerts !== null && statementAlerts.length === 0" class="text-sm text-slate-500 py-6 text-center">
-                No pending statements or upcoming dues. Set <em>statement_close_day</em> below to enable.
-            </li>
-        </ul>
-    </div>
-
-    <!-- OVERDRAFT FORECAST -->
-    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
-        <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
-                Overdraft forecast (next 14 days)
-            </h3>
-            <span class="text-xs text-slate-500" x-show="overdrafts !== null"
-                  x-text="`${overdrafts?.length || 0} accounts`"></span>
-        </div>
-        <div x-show="overdrafts === null" class="text-sm text-slate-500 py-3">Loading…</div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <template x-for="f in overdrafts || []" :key="f.checking_id">
-                <div class="rounded-md border p-3"
-                     :class="parseFloat(f.deficit) > 0 ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-slate-50'">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <div class="font-medium text-slate-900" x-text="f.checking_name"></div>
-                            <div class="text-xs text-slate-500">
-                                <span x-text="`${formatAmount(f.current_balance)} ${f.currency}`"></span>
-                                <span class="mx-1">·</span>
-                                <span class="text-rose-700" x-text="`-${formatAmount(f.projected_debits)}`"></span>
-                                <span class="mx-1">·</span>
-                                <span class="text-emerald-700" x-text="`+${formatAmount(f.projected_incomes)}`"></span>
-                                <span class="mx-1">→</span>
-                                <span :class="parseFloat(f.projected_balance) < 0 ? 'text-rose-700 font-semibold' : 'text-slate-700 font-medium'"
-                                      x-text="`${formatAmount(f.projected_balance)} ${f.currency}`"></span>
-                            </div>
-                            <div x-show="f.projected_balance_usd !== null" class="text-[10px] text-slate-400 mt-0.5">
-                                ≈ <span x-text="`${formatAmount(f.current_balance_usd)} USD`"></span>
-                                <span class="mx-0.5">·</span>
-                                <span x-text="`-${formatAmount(f.projected_debits_usd)}`"></span>
-                                <span class="mx-0.5">·</span>
-                                <span x-text="`+${formatAmount(f.projected_incomes_usd)}`"></span>
-                                <span class="mx-0.5">→</span>
-                                <span x-text="`${formatAmount(f.projected_balance_usd)} USD`"></span>
-                            </div>
-                        </div>
-                        <div class="text-right">
-                            <div x-show="parseFloat(f.deficit) > 0"
-                                 class="text-sm font-semibold text-rose-700"
-                                 x-text="`-${formatAmount(f.deficit)} ${f.currency}`"></div>
-                            <div class="text-xs text-slate-500"
-                                 x-show="f.min_balance_date"
-                                 x-text="`worst on ${f.min_balance_date}`"></div>
-                            <div x-show="!f.has_cc_links" class="text-[10px] text-amber-700 mt-1" title="No CC linked → forecast may be incomplete">⚠ no CC links</div>
-                        </div>
-                    </div>
-                    <div class="mt-2">
-                        <button @click="toggleExpand(f.checking_id)"
-                                class="text-xs text-blue-600 hover:underline"
-                                x-text="expanded[f.checking_id] ? 'hide schedule' : `schedule (${f.events.length})`"></button>
-                        <ul x-show="expanded[f.checking_id]" x-cloak
-                            class="mt-2 text-xs space-y-0.5 font-mono">
-                            <template x-for="(e, i) in f.events" :key="i">
-                                <li class="flex justify-between border-b border-slate-200/50 py-0.5">
-                                    <span x-text="`${e.event_date}  ·  ${e.source}`"></span>
-                                    <span :class="e.source_type === 'income' ? 'text-emerald-700' : (e.source_type === 'cc_autopay' ? 'text-blue-700' : 'text-slate-700')">
-                                        <span x-text="`${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount)} ${f.currency}`"></span>
-                                        <span x-show="e.amount_usd !== null" class="text-slate-400"
-                                              x-text="`(≈${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount_usd)} USD)`"></span>
-                                    </span>
-                                </li>
-                            </template>
-                            <li x-show="f.events.length === 0" class="text-slate-400 italic">No projected events.</li>
-                        </ul>
-                    </div>
-                </div>
-            </template>
-            <div x-show="overdrafts !== null && overdrafts.length === 0" class="col-span-full text-sm text-slate-500 py-6 text-center">
-                No active checking accounts.
-            </div>
-        </div>
-    </div>
-
-    <!-- STATEMENT DATES (close + due day per active CC / checking) -->
-    <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
-        <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
-                Statement dates
-            </h3>
-            <span class="text-xs text-slate-500" x-text="`${cards.length + checkings.length} accounts`"></span>
-        </div>
-        <table class="w-full text-sm">
-            <thead class="text-xs uppercase text-slate-500">
-                <tr class="border-b border-slate-200">
-                    <th class="text-left py-1.5">Account</th>
-                    <th class="text-left py-1.5">Type</th>
-                    <th class="text-right py-1.5 w-24">Close day</th>
-                    <th class="text-right py-1.5 w-24">Due day</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="pm in [...cards, ...checkings].sort((a,b) => a.name.localeCompare(b.name))" :key="pm.id">
-                    <tr class="border-b border-slate-100">
-                        <td class="py-1.5 font-medium text-slate-900" x-text="pm.name"></td>
-                        <td class="py-1.5 text-xs text-slate-500" x-text="`${pm.type} · ${pm.currency}`"></td>
-                        <td class="py-1.5 text-right" x-text="pm.statement_close_day || '—'"
-                            :class="pm.statement_close_day ? 'text-slate-700' : 'text-slate-400'"></td>
-                        <td class="py-1.5 text-right" x-text="pm.due_day || '—'"
-                            :class="pm.due_day ? 'text-slate-700' : 'text-slate-400'"></td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-        <p class="text-[10px] text-slate-400 mt-2">
-            Populated automatically when a statement with a recognized header is imported. Manual override via API.
-        </p>
-    </div>
-
-    <!-- EXPIRING CONTRACTS / INSTALLMENTS -->
+    <!-- EXPIRING CONTRACTS / INSTALLMENTS — the core of this page -->
     <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
         <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
@@ -242,6 +143,181 @@
             </li>
         </ul>
     </div>
+
+    <!-- SECONDARY: the two feeds that are now pushed to the calendar, plus the
+         statement-day reference table they are derived from. Collapsed by
+         default; same disclosure idiom the per-account schedule already uses. -->
+    <div class="bg-slate-50 rounded-lg border border-slate-200">
+        <button @click="secondary = !secondary"
+                class="w-full flex items-center justify-between gap-3 px-4 py-3 text-left">
+            <span class="text-sm font-semibold text-slate-600 uppercase tracking-wide">
+                Statement dues &amp; overdraft forecast
+            </span>
+            <span class="flex items-center gap-3 text-xs text-slate-500 shrink-0">
+                <span x-show="statementAlerts !== null"
+                      x-text="`${statementAlerts?.length || 0} alerts`"></span>
+                <span class="text-blue-600" x-text="secondary ? 'hide detail' : 'show detail'"></span>
+            </span>
+        </button>
+        <p class="px-4 pb-3 text-xs text-slate-500">
+            Pushed to the family calendar every morning, so nobody has to open this
+            page to learn about them. Kept here as the detail behind a reminder.
+        </p>
+
+        <div x-show="secondary" x-cloak class="px-4 pb-4 space-y-4">
+
+            <!-- STATEMENT ALERTS (close/due) -->
+            <div class="bg-white rounded-lg border border-slate-200 p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                        Statement &amp; payment alerts
+                    </h3>
+                    <span class="text-xs text-slate-500" x-show="statementAlerts !== null"
+                          x-text="`${statementAlerts?.length || 0} alerts`"></span>
+                </div>
+                <div x-show="statementAlerts === null" class="text-sm text-slate-500 py-3">Loading…</div>
+                <ul class="divide-y divide-slate-200/60">
+                    <template x-for="a in statementAlerts || []" :key="`${a.payment_method_id}-${a.kind}`">
+                        <li class="py-2 flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="inline-block px-1.5 py-0.5 text-[10px] rounded font-medium"
+                                          :class="a.severity === 'high' ? 'bg-rose-100 text-rose-800'
+                                                  : a.severity === 'medium' ? 'bg-amber-100 text-amber-900'
+                                                  : 'bg-emerald-100 text-emerald-800'"
+                                          x-text="a.kind === 'statement_closed' ? '📥 import'
+                                                  : a.kind === 'due_soon' ? '💳 pay'
+                                                  : '⏳ closing'"></span>
+                                    <span class="text-sm font-medium text-slate-900" x-text="a.payment_method_name"></span>
+                                    <span class="text-xs text-slate-500"
+                                          x-text="a.kind.replace('_', ' ')"></span>
+                                </div>
+                                <div class="text-xs text-slate-600 mt-0.5" x-text="a.message"></div>
+                            </div>
+                            <div class="text-right shrink-0">
+                                <div class="text-xs text-slate-500" x-text="a.target_date"></div>
+                                <a :href="a.kind === 'statement_closed' ? '/imports' : '/debts'"
+                                   class="text-xs text-blue-600 hover:underline"
+                                   x-text="a.kind === 'statement_closed' ? 'import ↗' : 'view ↗'"></a>
+                            </div>
+                        </li>
+                    </template>
+                    <li x-show="statementAlerts !== null && statementAlerts.length === 0" class="text-sm text-slate-500 py-6 text-center">
+                        No pending statements or upcoming dues. Set <em>statement_close_day</em> below to enable.
+                    </li>
+                </ul>
+            </div>
+
+            <!-- OVERDRAFT FORECAST -->
+            <div class="bg-white rounded-lg border border-slate-200 p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                        Overdraft forecast (next 14 days)
+                    </h3>
+                    <span class="text-xs text-slate-500" x-show="overdrafts !== null"
+                          x-text="`${overdrafts?.length || 0} accounts`"></span>
+                </div>
+                <div x-show="overdrafts === null" class="text-sm text-slate-500 py-3">Loading…</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <template x-for="f in overdrafts || []" :key="f.checking_id">
+                        <div class="rounded-md border p-3"
+                             :class="parseFloat(f.deficit) > 0 ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-slate-50'">
+                            <div class="flex items-start justify-between">
+                                <div>
+                                    <div class="font-medium text-slate-900" x-text="f.checking_name"></div>
+                                    <div class="text-xs text-slate-500">
+                                        <span x-text="`${formatAmount(f.current_balance)} ${f.currency}`"></span>
+                                        <span class="mx-1">·</span>
+                                        <span class="text-rose-700" x-text="`-${formatAmount(f.projected_debits)}`"></span>
+                                        <span class="mx-1">·</span>
+                                        <span class="text-emerald-700" x-text="`+${formatAmount(f.projected_incomes)}`"></span>
+                                        <span class="mx-1">→</span>
+                                        <span :class="parseFloat(f.projected_balance) < 0 ? 'text-rose-700 font-semibold' : 'text-slate-700 font-medium'"
+                                              x-text="`${formatAmount(f.projected_balance)} ${f.currency}`"></span>
+                                    </div>
+                                    <div x-show="f.projected_balance_usd !== null" class="text-[10px] text-slate-400 mt-0.5">
+                                        ≈ <span x-text="`${formatAmount(f.current_balance_usd)} USD`"></span>
+                                        <span class="mx-0.5">·</span>
+                                        <span x-text="`-${formatAmount(f.projected_debits_usd)}`"></span>
+                                        <span class="mx-0.5">·</span>
+                                        <span x-text="`+${formatAmount(f.projected_incomes_usd)}`"></span>
+                                        <span class="mx-0.5">→</span>
+                                        <span x-text="`${formatAmount(f.projected_balance_usd)} USD`"></span>
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <div x-show="parseFloat(f.deficit) > 0"
+                                         class="text-sm font-semibold text-rose-700"
+                                         x-text="`-${formatAmount(f.deficit)} ${f.currency}`"></div>
+                                    <div class="text-xs text-slate-500"
+                                         x-show="f.min_balance_date"
+                                         x-text="`worst on ${f.min_balance_date}`"></div>
+                                    <div x-show="!f.has_cc_links" class="text-[10px] text-amber-700 mt-1" title="No CC linked → forecast may be incomplete">⚠ no CC links</div>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <button @click="toggleExpand(f.checking_id)"
+                                        class="text-xs text-blue-600 hover:underline"
+                                        x-text="expanded[f.checking_id] ? 'hide schedule' : `schedule (${f.events.length})`"></button>
+                                <ul x-show="expanded[f.checking_id]" x-cloak
+                                    class="mt-2 text-xs space-y-0.5 font-mono">
+                                    <template x-for="(e, i) in f.events" :key="i">
+                                        <li class="flex justify-between border-b border-slate-200/50 py-0.5">
+                                            <span x-text="`${e.event_date}  ·  ${e.source}`"></span>
+                                            <span :class="e.source_type === 'income' ? 'text-emerald-700' : (e.source_type === 'cc_autopay' ? 'text-blue-700' : 'text-slate-700')">
+                                                <span x-text="`${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount)} ${f.currency}`"></span>
+                                                <span x-show="e.amount_usd !== null" class="text-slate-400"
+                                                      x-text="`(≈${e.source_type === 'income' ? '+' : '-'}${formatAmount(e.amount_usd)} USD)`"></span>
+                                            </span>
+                                        </li>
+                                    </template>
+                                    <li x-show="f.events.length === 0" class="text-slate-400 italic">No projected events.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="overdrafts !== null && overdrafts.length === 0" class="col-span-full text-sm text-slate-500 py-6 text-center">
+                        No active checking accounts.
+                    </div>
+                </div>
+            </div>
+
+            <!-- STATEMENT DATES (close + due day per active CC / checking) -->
+            <div class="bg-white rounded-lg border border-slate-200 p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                        Statement dates
+                    </h3>
+                    <span class="text-xs text-slate-500" x-text="`${cards.length + checkings.length} accounts`"></span>
+                </div>
+                <table class="w-full text-sm">
+                    <thead class="text-xs uppercase text-slate-500">
+                        <tr class="border-b border-slate-200">
+                            <th class="text-left py-1.5">Account</th>
+                            <th class="text-left py-1.5">Type</th>
+                            <th class="text-right py-1.5 w-24">Close day</th>
+                            <th class="text-right py-1.5 w-24">Due day</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="pm in [...cards, ...checkings].sort((a,b) => a.name.localeCompare(b.name))" :key="pm.id">
+                            <tr class="border-b border-slate-100">
+                                <td class="py-1.5 font-medium text-slate-900" x-text="pm.name"></td>
+                                <td class="py-1.5 text-xs text-slate-500" x-text="`${pm.type} · ${pm.currency}`"></td>
+                                <td class="py-1.5 text-right" x-text="pm.statement_close_day || '—'"
+                                    :class="pm.statement_close_day ? 'text-slate-700' : 'text-slate-400'"></td>
+                                <td class="py-1.5 text-right" x-text="pm.due_day || '—'"
+                                    :class="pm.due_day ? 'text-slate-700' : 'text-slate-400'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <p class="text-[10px] text-slate-400 mt-2">
+                    Populated automatically when a statement with a recognized header is imported. Manual override via API.
+                </p>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -250,7 +326,11 @@ function warningsPage() {
         overdrafts: null,
         expiring: null,
         statementAlerts: null,
+        spendGoals: null,
         expanded: {},
+        // Collapsed by default: these two feeds arrive as family-calendar
+        // reminders now, so the page opens on what it is still for.
+        secondary: false,
         cards: [],
         checkings: [],
         cardsNeedingSetup: [],
@@ -262,7 +342,17 @@ function warningsPage() {
                 this.loadExpiring(),
                 this.loadPaymentMethods(),
                 this.loadStatementAlerts(),
+                this.loadSpendGoals(),
             ]);
+        },
+
+        async loadSpendGoals() {
+            try {
+                const r = await fetch('/api/spend-goals?active_only=true');
+                this.spendGoals = await r.json();
+            } catch (e) {
+                this.spendGoals = [];
+            }
         },
 
         async loadStatementAlerts() {

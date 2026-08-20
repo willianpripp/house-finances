@@ -59,6 +59,28 @@ def test_transactions_renders_incrementally_on_both_uis(client):
         assert "Load more (${remainingRows()} remaining)" in body, headers
 
 
+def test_both_uis_know_which_facts_a_provider_owns(client):
+    """One writer per fact, on the screen as well as in the API. Each of the
+    three guarded forms must read the linkage the list endpoints expose, or the
+    page offers an edit that can only 409. Every assertion here is a form that
+    would otherwise look editable."""
+    checks = {
+        # /savings keys on the free-text account_name, so linkage is resolved
+        # by exact payment-method name.
+        "/savings": ["accountProvider(", "?.provider"],
+        # /debts resolves the card behind each balance row.
+        "/debts": ["cardProvider(", "providerCards()"],
+        # /transactions locks the provider-owned fields and drops them from the
+        # PATCH body, which is what keeps category editable.
+        "/transactions": ["editing.provider", "pmLabel(pm)", "!!pm.provider"],
+    }
+    for path, needles in checks.items():
+        for headers in ({}, MOBI_UA):
+            body = client.get(path, headers=headers).text
+            for needle in needles:
+                assert needle in body, (path, headers, needle)
+
+
 def test_monthly_report_has_a_phone_template(client):
     r = client.get("/reports/monthly", headers=MOBI_UA)
     assert r.status_code == 200
@@ -69,8 +91,8 @@ def test_monthly_report_has_a_phone_template(client):
 def test_every_converted_page_serves_phone_on_mobi(client):
     pages = [
         "/", "/receivables", "/connections", "/reports/monthly",
-        "/transactions", "/debts", "/savings", "/income",
-        "/exchange-rates", "/assets", "/warnings", "/reports/annual",
+        "/transactions", "/debts", "/savings",
+        "/assets", "/warnings", "/reports/annual",
     ]
     for path in pages:
         r = client.get(path, headers=MOBI_UA)
@@ -163,6 +185,65 @@ def test_ui_strings_are_english_only():
             if re.search(rf"\b{word}\b", text):
                 offenders.append(f"{path}: {word!r}")
     assert not offenders, "Portuguese in the UI: " + "; ".join(offenders)
+
+
+def test_warnings_demotes_the_pushed_feeds_on_both_uis():
+    """Phase D2 (2026-08-19): expiring contracts and the spend goals are the
+    page; the overdraft forecast and the statement alerts sit behind one
+    collapsed toggle, because they now arrive as calendar reminders. Both feeds
+    must still be REQUESTED (they feed the push and the Home summary), so this
+    checks placement, not absence — and it checks both UIs, since the horizon
+    label bug of 2026-08-15 was exactly a change applied to one twin only."""
+    import pathlib
+
+    for name in ("warnings.html", "phone/warnings.html"):
+        text = (pathlib.Path("app/templates") / name).read_text(encoding="utf-8")
+
+        assert "secondary: false" in text, f"{name}: the section must start collapsed"
+        assert 'x-show="secondary" x-cloak' in text, f"{name}: no disclosure wrapper"
+
+        # Still fetched: the services feed the push and the Home summary.
+        for endpoint in ("/api/warnings/overdraft", "/api/warnings/statements"):
+            assert endpoint in text, f"{name} stopped requesting {endpoint}"
+
+        toggle = text.index('@click="secondary = !secondary"')
+        assert text.index("expiring || []") < toggle, (
+            f"{name}: contracts / installments must come before the collapsed section"
+        )
+        assert text.index("spendGoals || []") < toggle, (
+            f"{name}: the spend-goal cards must come before the collapsed section"
+        )
+        assert text.index("overdrafts || []") > toggle, (
+            f"{name}: the overdraft forecast must be inside the collapsed section"
+        )
+        assert text.index("statementAlerts || []") > toggle, (
+            f"{name}: the statement alerts must be inside the collapsed section"
+        )
+
+
+def test_savings_history_is_collapsed_on_desktop_and_absent_on_phone():
+    """Demo review, 2026-08-19: the desktop history listing (per-date
+    snapshots under the filters) starts collapsed behind the same disclosure
+    idiom as the warnings page, showing the snapshot count in its header. The
+    phone twin drops history entirely, no toggle (owner decision): only the
+    add-snapshot sheet remains there."""
+    import pathlib
+
+    desktop = (pathlib.Path("app/templates") / "savings.html").read_text(encoding="utf-8")
+    assert "historyOpen: false" in desktop, "desktop history must start collapsed"
+    assert 'x-show="historyOpen" x-cloak' in desktop, "no disclosure wrapper on the listing"
+    toggle = desktop.index('@click="historyOpen = !historyOpen"')
+    assert desktop.index("(history?.snapshots || []).length") < toggle + len(
+        '@click="historyOpen = !historyOpen"'
+    ) + 400, "the toggle header must show the snapshot count"
+    assert desktop.index("groupedHistory()") > toggle, (
+        "the per-date listing must be inside the collapsed section"
+    )
+
+    phone = (pathlib.Path("app/templates/phone") / "savings.html").read_text(encoding="utf-8")
+    assert "groupedHistory" not in phone, "phone must not carry the history listing at all"
+    assert "reloadHistory" not in phone, "phone must not fetch history data it never shows"
+    assert "historyOpen" not in phone, "phone has no toggle to remove: history is just gone"
 
 
 def test_warnings_horizon_labels_match_the_requests_on_both_uis():

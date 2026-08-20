@@ -59,6 +59,30 @@
         </ul>
     </div>
 
+    <!-- SPEND GOALS -->
+    <div class="pcard" x-show="spendGoals?.length">
+        <a href="/warnings" class="flex items-center justify-between">
+            <span class="text-sm font-semibold text-slate-800">🎯 Spend goals</span>
+            <span class="text-xs text-slate-500" x-text="spendGoals?.length || 0"></span>
+        </a>
+        <div class="mt-1 space-y-2">
+            <template x-for="g in spendGoals || []" :key="g.id">
+                <div>
+                    <div class="flex items-center justify-between text-sm">
+                        <span class="text-slate-700 truncate" x-text="g.payment_method_name"></span>
+                        <span class="text-xs text-slate-500 shrink-0"
+                              x-text="`${formatAmount(g.spent)}/${formatAmount(g.target_amount)} ${g.currency} · ${g.days_left}d`"></span>
+                    </div>
+                    <div class="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden mt-1">
+                        <div class="h-full rounded-full"
+                             :class="g.completed ? 'bg-emerald-500' : (g.on_pace ? 'bg-blue-500' : 'bg-amber-500')"
+                             :style="`width: ${Math.min(100, parseFloat(g.pct))}%`"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
     <!-- EVERYTHING ELSE -->
     <div class="pcard">
         <div class="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-1">All pages</div>
@@ -68,11 +92,9 @@
         <a href="/debts" class="prow"><span>💳</span><span class="grow text-slate-800">Debts</span><span class="text-xs text-slate-500" x-text="stats?.debts?.value || ''"></span></a>
         <a href="/assets" class="prow"><span>🚗</span><span class="grow text-slate-800">Assets</span></a>
         <a href="/transactions" class="prow"><span>✏️</span><span class="grow text-slate-800">Transactions</span></a>
-        <a href="/income" class="prow"><span>💵</span><span class="grow text-slate-800">Income</span></a>
         <a href="/imports" class="prow"><span>📥</span><span class="grow text-slate-800">Imports</span></a>
         <a href="/connections" class="prow"><span>🔗</span><span class="grow text-slate-800">Connections</span></a>
         <a href="/warnings" class="prow"><span>⚠️</span><span class="grow text-slate-800">Warnings</span><span class="text-xs text-slate-500" x-text="stats?.warnings?.value ? stats.warnings.value + ' active' : ''"></span></a>
-        <a href="/exchange-rates" class="prow"><span>💱</span><span class="grow text-slate-800">Rates</span></a>
         <a href="/rules" class="prow"><span>🏷️</span><span class="grow text-slate-800">Rules</span></a>
         <a href="/guide" class="prow"><span>📖</span><span class="grow text-slate-800">Guide</span></a>
     </div>
@@ -90,6 +112,7 @@ function phoneHome() {
     return {
         stats: null,
         warningsSummary: null,
+        spendGoals: [],
         greeting: '',
         monthLabel: '',
 
@@ -97,7 +120,13 @@ function phoneHome() {
             const h = new Date().getHours();
             const salute = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
             this.greeting = `${salute}, {{ user_name or "there" }}`;
-            await Promise.all([this.loadStats(), this.loadWarnings()]);
+            await Promise.all([this.loadStats(), this.loadWarnings(), this.loadSpendGoals()]);
+        },
+        async loadSpendGoals() {
+            try {
+                const r = await fetch('/api/spend-goals?active_only=true');
+                if (r.ok) this.spendGoals = await r.json();
+            } catch (e) { /* ignore */ }
         },
         async loadStats() {
             try {
@@ -119,6 +148,11 @@ function phoneHome() {
             if (Number.isNaN(n)) return '';
             const arrow = n > 0.05 ? '▲' : n < -0.05 ? '▼' : '—';
             return `${arrow} ${Math.abs(n).toFixed(1)}% MoM`;
+        },
+        formatAmount(amount) {
+            const n = parseFloat(amount);
+            if (Number.isNaN(n)) return '';
+            return n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
         },
     };
 }

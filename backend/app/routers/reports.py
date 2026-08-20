@@ -38,6 +38,11 @@ class IncomeBucketOut(BaseModel):
     amount_native: Decimal
     currency: str
     amount_usd: Decimal
+    # Which conversion rule produced amount_usd, and whether a fallback rate
+    # was involved. Both UIs render the flag; see
+    # services/income.convert_entry_to_usd.
+    rate_basis: str = "usd"
+    approximate: bool = False
 
     @classmethod
     def from_obj(cls, b: IncomeBucket) -> "IncomeBucketOut":
@@ -52,6 +57,9 @@ class CategoryBucketOut(BaseModel):
     amount_usd: Decimal
     transaction_count: int
     category_icon: str | None = None
+    # A transaction in this category had no exchange rate at or before its
+    # date; see reports._usd_on_date.
+    approximate: bool = False
 
     @classmethod
     def from_obj(cls, b: CategoryBucket) -> "CategoryBucketOut":
@@ -76,6 +84,8 @@ class MonthTotalsOut(BaseModel):
     net_income_usd: Decimal
     taxes_partner_usd: Decimal = Decimal("0")
     taxes_primary_usd: Decimal = Decimal("0")
+    income_rate_approximate: bool = False
+    spending_rate_approximate: bool = False
 
     fixed_spending_usd: Decimal
     variable_spending_usd: Decimal
@@ -179,6 +189,7 @@ class AnnualCategoryBucketOut(BaseModel):
     color: str
     amount_usd: Decimal
     category_icon: str | None = None
+    approximate: bool = False
 
     @classmethod
     def from_obj(cls, b: AnnualCategoryBucket) -> "AnnualCategoryBucketOut":
@@ -201,6 +212,7 @@ class AnnualReportOut(BaseModel):
     end_assets_usd: Decimal = Decimal("0")
     end_total_worth_usd: Decimal = Decimal("0")
     top_categories: list[AnnualCategoryBucketOut]
+    spending_rate_approximate: bool = False
 
     @classmethod
     def from_obj(cls, r: AnnualReport) -> "AnnualReportOut":
@@ -220,6 +232,7 @@ class AnnualReportOut(BaseModel):
             end_assets_usd=r.end_assets_usd,
             end_total_worth_usd=r.end_total_worth_usd,
             top_categories=[AnnualCategoryBucketOut.from_obj(c) for c in r.top_categories],
+            spending_rate_approximate=r.spending_rate_approximate,
         )
 
 

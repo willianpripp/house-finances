@@ -57,6 +57,7 @@ class ExpiringItemOut(BaseModel):
     recurrence_kind: str
     severity: str
     detail: str
+    end_date: date
 
 
 class SummaryItemOut(BaseModel):

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+from fastapi import Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -71,3 +72,25 @@ def user_id_from_token(token: str) -> int | None:
         return int(payload["sub"])
     except (jwt.InvalidTokenError, KeyError, ValueError):
         return None
+
+
+def current_user_id(request: Request) -> int:
+    """The authenticated user for this request, as a router dependency.
+
+    `require_session` (app/main.py) guards every non-exempt route and sets
+    `request.state.user_id` before any router body runs, so a route that
+    depends on this always gets a real id here — never a stand-in like the
+    primary user's id. A route that is exempt from `require_session` (see
+    that middleware's allowlist) has no business depending on this; the
+    RuntimeError is a loud signal that it was wired up wrong, not a case to
+    silently paper over with a default.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is None:
+        raise RuntimeError(
+            "current_user_id() called on a request the auth middleware did "
+            "not authenticate; add the route to require_session's allowlist "
+            "only if it truly needs no user, and never depend on "
+            "current_user_id from there."
+        )
+    return user_id

@@ -110,6 +110,36 @@ trade-off is accepted and documented: two legitimate same-day, same-amount
 purchases on the same card by the same person collide in the preview and must be
 un-skipped by hand.
 
+**Layer 3: pending to posted supersede, within Plaid.** Neither layer above can
+see that a pending charge and its posted version are the same purchase: Plaid
+gives the posted version a new transaction id (layer 1 misses it) under a
+different descriptor, on a later date, and sometimes for a different amount
+(layer 2 misses it too). The only link is `pending_transaction_id`, which the
+posted transaction carries and which names the pending transaction it replaces.
+
+Both versions can reach a commit two ways, and both have to be handled:
+
+1. The pending row was committed in an earlier review. The posted row then
+   **updates that ledger row in place**: new transaction id, descriptor, date,
+   amount, and the pending flag cleared. Never delete and re-insert, because the
+   row's id is already referenced (`receivables.settled_transaction_id`) and a
+   human may already have corrected its category or merchant. The provider owns
+   the fact; the filing of it is human work and survives.
+2. Both versions arrive in the **same** pull, which happens when an issuer keeps
+   the pending transaction listed for a while after the posted one appears (the
+   review window covers everything since the clean-start anchor, so one pull can
+   carry both). The pending row is then dropped and only the posted row lands.
+   This case cannot be handled row by row: sessions do not autoflush, so a row
+   added a moment earlier in the same commit loop is invisible to a lookup, and
+   the provider lists the two in whatever order it likes. The batch is therefore
+   scanned up front for the pending ids its rows declare they replace, which
+   makes the outcome order-independent. Skipping this pre-pass is what put two
+   rows in the ledger for one purchase in August 2026.
+
+The review stage shows both as their own row state ("replaces pending row N",
+with the amount change called out, and "superseded" on the pending row) so the
+preview never promises an insert the commit will not make.
+
 **A hard guard closes the loop:** any payment method mapped to a provider
 account rejects manual import with HTTP 409, across all import endpoints. Once
 an account is fed by a provider, there is exactly one way in.

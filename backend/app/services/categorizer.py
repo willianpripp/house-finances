@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Category, CategorizationRule, Merchant
@@ -74,10 +74,27 @@ class Categorizer:
         )
 
     def get_or_create_merchant(self, name: str, default_category_id: int) -> Merchant:
-        existing = self.session.scalar(select(Merchant).filter_by(name=name))
-        if existing:
-            return existing
-        merchant = Merchant(name=name, default_category_id=default_category_id)
-        self.session.add(merchant)
-        self.session.flush()
-        return merchant
+        return get_or_create_merchant(self.session, name, default_category_id)
+
+
+def get_or_create_merchant(session: Session, name: str, default_category_id: int) -> Merchant:
+    """Shared by every merchant-creation path: importers (via `Categorizer`
+    above), the categorization-rules recategorize endpoint, and the manual
+    transaction form's "new merchant" option.
+
+    The match is case-INSENSITIVE, unlike `payment_method_by_account_name` in
+    provider_guard.py: a merchant is one real-world business no matter how a
+    human typed it ("facebook marketplace" reuses "Facebook Marketplace"
+    rather than spawning a twin), whereas that account-name match is keyed to
+    an exact string a report aggregates on. Two different facts, two
+    different rules.
+    """
+    existing = session.scalar(
+        select(Merchant).where(func.lower(Merchant.name) == func.lower(name))
+    )
+    if existing:
+        return existing
+    merchant = Merchant(name=name, default_category_id=default_category_id)
+    session.add(merchant)
+    session.flush()
+    return merchant

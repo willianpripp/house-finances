@@ -79,6 +79,8 @@
                 — paste mid-month activity for an instant update, or wait for the statement PDF.
                 Need a one-off override? Edit the latest row in the history below.
             </p>
+            <p x-show="providerCards().length" class="mt-1 text-xs text-amber-700"
+               x-text="`Not these, though: ${providerCards().join(', ')}. Their balance comes from the provider refresh, so the override is refused.`"></p>
         </div>
 
         <!-- HISTORY TOGGLE -->
@@ -130,7 +132,13 @@
                                                      x-text="formatAmount(b.balance) + ' ' + b.currency"></div>
                                                 <div class="px-3 py-2 text-xs text-slate-500" x-text="b.due_day || '—'"></div>
                                                 <div class="px-3 py-2 text-right space-x-2">
-                                                    <button @click="startEditCard(b)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                                                    <!-- One writer per fact: a provider-fed card's balance
+                                                         comes from the refresh, so the override always 409s.
+                                                         Delete is what the guard still allows. -->
+                                                    <span x-show="cardProvider(b)" class="text-[11px] text-slate-400"
+                                                          x-text="`${cardProvider(b)} owns this`"></span>
+                                                    <button x-show="!cardProvider(b)"
+                                                            @click="startEditCard(b)" class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
                                                     <button @click="askDeleteCard(b)" class="text-rose-600 hover:text-rose-800 text-xs font-medium">Delete</button>
                                                 </div>
                                             </div>
@@ -377,6 +385,15 @@ function debtsPage() {
             const res = await fetch('/api/payment-methods?active_only=false');
             const all = await res.json();
             this.cardPaymentMethods = all.filter(pm => pm.type === 'credit_card');
+        },
+
+        // One writer per fact: `provider` non-null means the balance refresh
+        // owns this card's number and the manual override answers 409.
+        cardProvider(b) {
+            return this.cardPaymentMethods.find(pm => pm.id === b.payment_method_id)?.provider || null;
+        },
+        providerCards() {
+            return this.cardPaymentMethods.filter(pm => pm.provider).map(pm => pm.name);
         },
 
         async reloadCardsCurrent() {
