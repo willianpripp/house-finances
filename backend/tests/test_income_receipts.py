@@ -434,6 +434,21 @@ def test_an_unknown_provenance_is_refused(db):
 # ---------- the pre-ledger backfill ----------
 
 
+_BACKFILL_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "migrations"
+    / "versions"
+    / "2026_08_20_1100-backfill_income_receipts.py"
+)
+
+# The public export ships a squashed migration baseline, so this private-only
+# migration file does not exist there and the tests that replay its SQL skip.
+requires_backfill_migration = pytest.mark.skipif(
+    not _BACKFILL_MIGRATION_PATH.exists(),
+    reason="backfill migration is private history, not part of the public export",
+)
+
+
 def _backfill_migration():
     """Load the backfill migration module so the test runs its real SQL.
 
@@ -441,12 +456,7 @@ def _backfill_migration():
     safe and keeps this test from drifting away from what actually ran against
     production.
     """
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "2026_08_20_1100-backfill_income_receipts.py"
-    )
+    path = _BACKFILL_MIGRATION_PATH
     spec = importlib.util.spec_from_file_location("backfill_income_receipts", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -459,6 +469,7 @@ def _run_backfill(db) -> None:
     db.flush()
 
 
+@requires_backfill_migration
 def test_backfill_reproduces_an_existing_total_exactly(db):
     """A row that predates receipts. The backfill must leave its number
     untouched to the cent, and recompute must agree."""
@@ -492,6 +503,7 @@ def test_backfill_reproduces_an_existing_total_exactly(db):
     assert Decimal(row.amount) == Decimal("2070.00")
 
 
+@requires_backfill_migration
 def test_backfill_is_repeatable(db):
     db.add(
         IncomeEntry(
@@ -519,6 +531,7 @@ def test_backfill_is_repeatable(db):
     )
 
 
+@requires_backfill_migration
 def test_a_lumped_month_holds_its_total_when_a_resync_re_presents_deposits(db):
     """The migration hazard, pinned down.
 
@@ -567,6 +580,7 @@ def test_a_lumped_month_holds_its_total_when_a_resync_re_presents_deposits(db):
     }
 
 
+@requires_backfill_migration
 def test_retiring_the_lump_makes_the_month_fully_derived(db):
     """Deleting the backfill receipt is the migration path off a frozen month."""
     pm = _checking(db, "Receipt Retire Lump Checking", Currency.BRL)
